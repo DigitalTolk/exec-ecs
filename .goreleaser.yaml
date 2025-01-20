@@ -1,31 +1,28 @@
-# This is an example .goreleaser.yml file with some sensible defaults.
-# Make sure to check the documentation at https://goreleaser.com
-
-# The lines below are called `modelines`. See `:help modeline`
-# Feel free to remove those if you don't want/need to use them.
-# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
-# vim: set ts=2 sw=2 tw=0 fo=cnqoj
-
 version: 2
 
 before:
   hooks:
     # You may remove this if you don't use go modules.
     - go mod tidy
-    # you may remove this if you don't need go generate
+    # You may remove this if you don't need go generate
     - go generate ./...
 
 builds:
   - env:
       - CGO_ENABLED=0
+    main: ./main.go # Update this path to the entry point of your CLI tool
+    binary: exec-ecs    # Name of the binary file to generate
     goos:
       - linux
       - windows
       - darwin
+    goarch:
+      - amd64
+      - arm64
 
 archives:
   - format: tar.gz
-    # this name template makes the OS and Arch compatible with the results of `uname`.
+    # This name template makes the OS and Arch compatible with the results of `uname`.
     name_template: >-
       {{ .ProjectName }}_
       {{- title .Os }}_
@@ -33,7 +30,7 @@ archives:
       {{- else if eq .Arch "386" }}i386
       {{- else }}{{ .Arch }}{{ end }}
       {{- if .Arm }}v{{ .Arm }}{{ end }}
-    # use zip for windows archives
+    # Use zip for windows archives
     format_overrides:
       - goos: windows
         format: zip
@@ -46,6 +43,9 @@ changelog:
       - "^test:"
 
 release:
+  github:
+    owner: shiv122 
+    name: exec-ecs
   footer: >-
 
     ---
