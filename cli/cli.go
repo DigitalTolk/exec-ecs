@@ -9,6 +9,7 @@ type Cli struct {
 	Service     string
 	Container   string
 	Command     string
+	ShowCommand bool
 }
 
 func ParseArgs() Cli {
