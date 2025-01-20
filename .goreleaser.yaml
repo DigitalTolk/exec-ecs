@@ -45,7 +45,7 @@ changelog:
 release:
   github:
     owner: shiv122 
-    name: exec-ecs
+    name: aws-cli
   footer: >-
 
     ---
