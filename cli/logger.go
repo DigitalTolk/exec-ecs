@@ -7,11 +7,12 @@ import (
 	"strings"
 )
 
-var cmdLogger = log.New(os.Stdout, "[AWS CMD] ", log.Ltime)
+var cmdLogger = log.New(os.Stdout, "\n [AWS CMD] ", log.Ltime)
 
 func (c *Cli) LogAWSCommand(cmd string, args ...string) {
-	return
-	cmdLogger.Printf("aws %s %s", cmd, strings.Join(args, " "))
+	if c.Debug {
+		cmdLogger.Printf("aws %s %s", cmd, strings.Join(args, " "))
+	}
 }
 
 func (c *Cli) LogUserFriendlyError(message string, err error, potentialFix, filePath string, lineNumber int) {

@@ -1,6 +1,9 @@
 package cli
 
-import "os"
+import (
+	"flag"
+	"os"
+)
 
 type Cli struct {
 	Interactive bool
@@ -9,11 +12,16 @@ type Cli struct {
 	Service     string
 	Container   string
 	Command     string
-	ShowCommand bool
+	Debug       bool
 }
 
 func ParseArgs() Cli {
+	var debug bool
+	flag.BoolVar(&debug, "debug", false, "Enable debug mode for logging AWS commands")
+	flag.Parse()
+
 	return Cli{
+		Debug:       debug,
 		Interactive: true,
 		Profile:     getArg("-p", "dt-infra"),
 		Region:      getArg("-r", "eu-north-1"),

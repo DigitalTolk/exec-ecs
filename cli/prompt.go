@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
@@ -18,10 +19,28 @@ func (c *Cli) CheckSSOSession(ctx context.Context, client *sts.Client, profile s
 	return err
 }
 
-func (c *Cli) SelectProfile() string {
-	awsConfigPath := os.Getenv("HOME") + "/.aws/config"
+func (c *Cli) getStoredConfigPath() string {
+	customPathFile := os.Getenv("HOME") + "/.aws/custom_config_path"
+	if data, err := os.ReadFile(customPathFile); err == nil {
+		return string(data)
+	}
+	return ""
+}
 
-	// Check if the config file exists
+func (c *Cli) saveCustomConfigPath(path string) error {
+	customPathFile := os.Getenv("HOME") + "/.aws/custom_config_path"
+	awsDir := filepath.Dir(customPathFile)
+	if err := os.MkdirAll(awsDir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+	return os.WriteFile(customPathFile, []byte(path), 0600)
+}
+
+func (c *Cli) SelectProfile() string {
+	awsConfigPath := c.getStoredConfigPath()
+	if awsConfigPath == "" {
+		awsConfigPath = os.Getenv("HOME") + "/.aws/configg"
+	}
 	if _, err := os.Stat(awsConfigPath); os.IsNotExist(err) {
 		fmt.Printf("AWS config file not found at %s.\n", awsConfigPath)
 		prompt := promptui.Prompt{
@@ -33,6 +52,11 @@ func (c *Cli) SelectProfile() string {
 			log.Fatalf("Prompt failed: %v", err)
 		}
 		awsConfigPath = newPath
+
+		// Store the custom path for future use
+		if err := c.saveCustomConfigPath(newPath); err != nil {
+			fmt.Printf("Warning: Failed to save custom config path: %v\n", err)
+		}
 	}
 
 	// Load the config file
