@@ -1,28 +1,29 @@
+project_name: exec-ecs
 version: 2
 
 before:
   hooks:
-    # You may remove this if you don't use go modules.
+    # Ensures the go.mod file is tidy before building
     - go mod tidy
-    # You may remove this if you don't need go generate
+    # Runs Go generate commands
     - go generate ./...
 
 builds:
   - env:
       - CGO_ENABLED=0
-    main: ./main.go # Update this path to the entry point of your CLI tool
-    binary: exec-ecs    # Name of the binary file to generate
     goos:
       - linux
       - windows
       - darwin
     goarch:
       - amd64
+      - 386
+      - arm
       - arm64
 
 archives:
   - format: tar.gz
-    # This name template makes the OS and Arch compatible with the results of `uname`.
+    # Name template that uses the project name and OS/Arch
     name_template: >-
       {{ .ProjectName }}_
       {{- title .Os }}_
@@ -30,7 +31,7 @@ archives:
       {{- else if eq .Arch "386" }}i386
       {{- else }}{{ .Arch }}{{ end }}
       {{- if .Arm }}v{{ .Arm }}{{ end }}
-    # Use zip for windows archives
+    # Use zip for Windows archives
     format_overrides:
       - goos: windows
         format: zip
@@ -43,9 +44,6 @@ changelog:
       - "^test:"
 
 release:
-  github:
-    owner: shiv122 
-    name: aws-cli
   footer: >-
 
     ---
