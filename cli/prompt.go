@@ -39,7 +39,7 @@ func (c *Cli) saveCustomConfigPath(path string) error {
 func (c *Cli) SelectProfile() string {
 	awsConfigPath := c.getStoredConfigPath()
 	if awsConfigPath == "" {
-		awsConfigPath = os.Getenv("HOME") + "/.aws/configg"
+		awsConfigPath = os.Getenv("HOME") + "/.aws/config"
 	}
 	if _, err := os.Stat(awsConfigPath); os.IsNotExist(err) {
 		fmt.Printf("AWS config file not found at %s.\n", awsConfigPath)
