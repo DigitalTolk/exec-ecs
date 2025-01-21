@@ -80,10 +80,10 @@ func validateSSOSession(ctx context.Context, cli *cli.Cli, awsCfg aws.Config) {
 
 func selectCluster(ctx context.Context, cli *cli.Cli, awsCfg aws.Config) string {
 	sp := createSpinner("Connecting to ECS...")
-	defer sp.Stop()
 
 	ecsClient := ecs.NewFromConfig(awsCfg)
 	cli.LogAWSCommand("ecs", "list-clusters", "--profile", cli.Profile, "--region", cli.Region)
+	sp.Stop()
 
 	clusterArn, err := cli.SelectCluster(ctx, ecsClient)
 	if err != nil {
@@ -94,7 +94,6 @@ func selectCluster(ctx context.Context, cli *cli.Cli, awsCfg aws.Config) string 
 
 func selectService(ctx context.Context, cli *cli.Cli, awsCfg aws.Config, clusterArn string) string {
 	sp := createSpinner("Fetching ECS services...")
-	defer sp.Stop()
 
 	ecsClient := ecs.NewFromConfig(awsCfg)
 	cli.LogAWSCommand("ecs", "list-services", "--cluster", clusterArn, "--profile", cli.Profile, "--region", cli.Region)
@@ -103,22 +102,21 @@ func selectService(ctx context.Context, cli *cli.Cli, awsCfg aws.Config, cluster
 	if err != nil {
 		cli.LogUserFriendlyError("Error listing services", err, "Check if the selected cluster has any services and you have proper permissions.", "ECS Service configuration", 55)
 	}
-
+	sp.Stop()
 	return cli.PromptWithDefault("Choose ECS service", cli.Service, services)
 }
 
 func selectTask(ctx context.Context, cli *cli.Cli, awsCfg aws.Config, clusterArn, serviceName string) string {
 	sp := createSpinner("Fetching ECS tasks...")
-	defer sp.Stop()
 
 	ecsClient := ecs.NewFromConfig(awsCfg)
 	cli.LogAWSCommand("ecs", "list-tasks", "--cluster", clusterArn, "--service-name", serviceName, "--profile", cli.Profile, "--region", cli.Region)
+	sp.Stop()
 
 	taskArn, err := cli.SelectTask(ctx, ecsClient, clusterArn, serviceName)
 	if err != nil {
 		cli.LogUserFriendlyError("Error selecting task", err, "Ensure there are running tasks in the selected service.", "ECS Task configuration", 60)
 	}
-
 	return taskArn
 }
 
