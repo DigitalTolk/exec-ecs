@@ -44,6 +44,9 @@ changelog:
       - "^test:"
 
 release:
+  github:
+    owner: DigitalTolk
+    name: exec-ecs
   footer: >-
 
     ---
