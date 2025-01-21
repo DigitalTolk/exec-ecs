@@ -20,11 +20,34 @@ func (c *Cli) CheckSSOSession(ctx context.Context, client *sts.Client, profile s
 
 func (c *Cli) SelectProfile() string {
 	awsConfigPath := os.Getenv("HOME") + "/.aws/config"
-	cfg, err := ini.Load(awsConfigPath)
-	if err != nil {
-		c.LogUserFriendlyError("Failed to load AWS config", err, "Ensure your AWS config file exists and is properly formatted.", awsConfigPath, 92)
+
+	// Check if the config file exists
+	if _, err := os.Stat(awsConfigPath); os.IsNotExist(err) {
+		fmt.Printf("AWS config file not found at %s.\n", awsConfigPath)
+		prompt := promptui.Prompt{
+			Label:   "Enter AWS config file path",
+			Default: awsConfigPath,
+		}
+		newPath, err := prompt.Run()
+		if err != nil {
+			log.Fatalf("Prompt failed: %v", err)
+		}
+		awsConfigPath = newPath
 	}
 
+	// Load the config file
+	cfg, err := ini.Load(awsConfigPath)
+	if err != nil {
+		c.LogUserFriendlyError(
+			"Failed to load AWS config",
+			err,
+			"Ensure your AWS config file exists and is properly formatted.",
+			awsConfigPath,
+			92,
+		)
+	}
+
+	// Extract profiles
 	profiles := []string{}
 	for _, section := range cfg.Sections() {
 		if strings.HasPrefix(section.Name(), "profile ") {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"ecs-tool/cli"
+	"ecs-tool/installer"
 	"fmt"
 	"io"
 	"log"
@@ -21,6 +22,9 @@ import (
 
 func main() {
 	ctx := context.Background()
+
+	installer.CheckAndInstallDependencies()
+
 	cli := initializeCLI(ctx)
 	awsCfg := loadAWSConfig(ctx, cli)
 
