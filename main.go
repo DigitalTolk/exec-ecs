@@ -106,13 +106,13 @@ func selectService(ctx context.Context, cli *cli.Cli, awsCfg aws.Config, cluster
 
 	ecsClient := ecs.NewFromConfig(awsCfg)
 	cli.LogAWSCommand("ecs", "list-services", "--cluster", clusterArn, "--profile", cli.Profile, "--region", cli.Region)
-
-	services, err := cli.ListServices(ctx, ecsClient, clusterArn)
-	if err != nil {
-		cli.LogUserFriendlyError("Error listing services", err, "Check if the selected cluster has any services and you have proper permissions.", "ECS Service configuration", 55)
-	}
 	sp.Stop()
-	return cli.PromptWithDefault("Choose ECS service", cli.Service, services)
+	serviceName, err := cli.SelectService(ctx, ecsClient, clusterArn)
+	if err != nil {
+		cli.LogUserFriendlyError("Error selecting service", err, "Ensure there are services running in the selected cluster.", "ECS Service configuration", 55)
+	}
+	return serviceName
+
 }
 
 func selectTask(ctx context.Context, cli *cli.Cli, awsCfg aws.Config, clusterArn, serviceName string) string {
