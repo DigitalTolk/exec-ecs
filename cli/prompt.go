@@ -53,13 +53,11 @@ func (c *Cli) SelectProfile() string {
 		}
 		awsConfigPath = newPath
 
-		// Store the custom path for future use
 		if err := c.saveCustomConfigPath(newPath); err != nil {
 			fmt.Printf("Warning: Failed to save custom config path: %v\n", err)
 		}
 	}
 
-	// Load the config file
 	cfg, err := ini.Load(awsConfigPath)
 	if err != nil {
 		c.LogUserFriendlyError(
@@ -71,7 +69,6 @@ func (c *Cli) SelectProfile() string {
 		)
 	}
 
-	// Extract profiles
 	profiles := []string{}
 	for _, section := range cfg.Sections() {
 		if strings.HasPrefix(section.Name(), "profile ") {
@@ -99,25 +96,90 @@ func (c *Cli) SelectCluster(ctx context.Context, client *ecs.Client) (string, er
 }
 
 func (c *Cli) ListServices(ctx context.Context, client *ecs.Client, clusterArn string) ([]string, error) {
-	output, err := client.ListServices(ctx, &ecs.ListServicesInput{Cluster: &clusterArn})
-	if err != nil {
-		return nil, err
+	var (
+		services  []string
+		nextToken *string
+	)
+
+	for {
+		output, err := client.ListServices(ctx, &ecs.ListServicesInput{
+			Cluster:   &clusterArn,
+			NextToken: nextToken,
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		services = append(services, output.ServiceArns...)
+
+		if output.NextToken == nil {
+			break
+		}
+		nextToken = output.NextToken
 	}
-	return output.ServiceArns, nil
+
+	return services, nil
 }
 
 func (c *Cli) SelectTask(ctx context.Context, client *ecs.Client, clusterArn, serviceName string) (string, error) {
-	output, err := client.ListTasks(ctx, &ecs.ListTasksInput{
-		Cluster:     &clusterArn,
-		ServiceName: &serviceName,
-	})
-	if err != nil {
-		return "", err
+	var (
+		taskArns  []string
+		nextToken *string
+	)
+
+	for {
+		output, err := client.ListTasks(ctx, &ecs.ListTasksInput{
+			Cluster:     &clusterArn,
+			ServiceName: &serviceName,
+			NextToken:   nextToken,
+		})
+		if err != nil {
+			return "", err
+		}
+
+		taskArns = append(taskArns, output.TaskArns...)
+
+		if output.NextToken == nil {
+			break
+		}
+		nextToken = output.NextToken
 	}
-	if len(output.TaskArns) == 0 {
+
+	if len(taskArns) == 0 {
 		return "", fmt.Errorf("no tasks found")
 	}
-	return c.PromptSelect("Choose ECS task", output.TaskArns), nil
+
+	return c.PromptSelect("Choose ECS task", taskArns), nil
+}
+
+func (c *Cli) SelectContainer(ctx context.Context, client *ecs.Client, clusterArn, taskArn string) (string, error) {
+
+	output, err := client.DescribeTasks(ctx, &ecs.DescribeTasksInput{
+		Cluster: &clusterArn,
+		Tasks:   []string{taskArn},
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to describe tasks: %w", err)
+	}
+
+	if len(output.Tasks) == 0 {
+		return "", fmt.Errorf("no tasks found for ARN %s", taskArn)
+	}
+
+	task := output.Tasks[0]
+	if len(task.Containers) == 0 {
+		return "", fmt.Errorf("no containers found in task %s", taskArn)
+	}
+
+	containerNames := make([]string, 0, len(task.Containers))
+	for _, c := range task.Containers {
+		if c.Name != nil {
+			containerNames = append(containerNames, *c.Name)
+		}
+	}
+
+	selectedName := c.PromptSelect("Choose a container", containerNames)
+	return selectedName, nil
 }
 
 func (c *Cli) PromptSelect(label string, items []string) string {

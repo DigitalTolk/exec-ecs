@@ -33,8 +33,9 @@ func main() {
 	clusterArn := selectCluster(ctx, cli, awsCfg)
 	serviceName := selectService(ctx, cli, awsCfg, clusterArn)
 	taskArn := selectTask(ctx, cli, awsCfg, clusterArn, serviceName)
+	container := selectContainer(ctx, cli, awsCfg, clusterArn, taskArn)
 
-	executeECSCommand(cli, clusterArn, taskArn)
+	executeECSCommand(cli, clusterArn, taskArn, container)
 }
 
 func initializeCLI(ctx context.Context) *cli.Cli {
@@ -120,12 +121,26 @@ func selectTask(ctx context.Context, cli *cli.Cli, awsCfg aws.Config, clusterArn
 	return taskArn
 }
 
-func executeECSCommand(cli *cli.Cli, clusterArn, taskArn string) {
+func selectContainer(ctx context.Context, cli *cli.Cli, awsCfg aws.Config, clusterArn, taskArn string) string {
+	sp := createSpinner("Fetching ECS containers...")
+
+	ecsClient := ecs.NewFromConfig(awsCfg)
+	cli.LogAWSCommand("ecs", "describe-tasks", "--cluster", clusterArn, "--tasks", taskArn, "--profile", cli.Profile, "--region", cli.Region)
+	sp.Stop()
+
+	container, err := cli.SelectContainer(ctx, ecsClient, clusterArn, taskArn)
+	if err != nil {
+		cli.LogUserFriendlyError("Error selecting container", err, "Ensure the selected task has containers running.", "ECS Container configuration", 65)
+	}
+	return container
+}
+
+func executeECSCommand(cli *cli.Cli, clusterArn, taskArn string, container string) {
 	executeCmd := []string{
 		"ecs", "execute-command",
 		"--cluster", clusterArn,
 		"--task", taskArn,
-		"--container", cli.Container,
+		"--container", container,
 		"--interactive",
 		"--command", cli.Command,
 		"--profile", cli.Profile,
