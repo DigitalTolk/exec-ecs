@@ -8,7 +8,6 @@
 
 - **Cluster Selection**: Easily select an ECS cluster to work with.
 - **Service and Task Navigation**: Navigate through ECS services and tasks interactively.
-- **Execute Commands**: Run commands directly on ECS containers using `ecs execute-command`.
 
 ---
 
