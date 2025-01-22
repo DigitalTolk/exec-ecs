@@ -13,6 +13,8 @@ type Cli struct {
 	Container   string
 	Command     string
 	Debug       bool
+	Version     bool
+	Upgrade     bool
 }
 
 func ParseArgs() Cli {
