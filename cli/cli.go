@@ -13,11 +13,16 @@ type Cli struct {
 	Container   string
 	Command     string
 	Debug       bool
+	Version     bool
+	Upgrade     bool
 }
 
 func ParseArgs() Cli {
-	var debug bool
+	var debug, version, upgrade bool
+
 	flag.BoolVar(&debug, "debug", false, "Enable debug mode for logging AWS commands")
+	flag.BoolVar(&version, "version", false, "Show the current version")
+	flag.BoolVar(&upgrade, "upgrade", false, "Upgrade to the latest version")
 	flag.Parse()
 
 	return Cli{
@@ -28,6 +33,8 @@ func ParseArgs() Cli {
 		Service:     getArg("--service", ""),
 		Container:   getArg("--container", "app"),
 		Command:     getArg("--command", "bash"),
+		Version:     version,
+		Upgrade:     upgrade,
 	}
 }
 

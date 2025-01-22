@@ -39,6 +39,15 @@ func main() {
 
 func initializeCLI(ctx context.Context) *cli.Cli {
 	cli := cli.ParseArgs()
+	switch {
+	case cli.Version:
+		fmt.Println("exec-ecs version", installer.Version)
+		os.Exit(0)
+	case cli.Upgrade:
+		installer.UpgradeExecECS()
+		os.Exit(0)
+	}
+
 	cli.Profile = cli.SelectProfile()
 	cli.Region = cli.PromptWithDefault("Choose AWS region", cli.Region, []string{"eu-north-1", "eu-central-1", "eu-west-2"})
 	return &cli
