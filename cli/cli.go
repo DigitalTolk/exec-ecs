@@ -33,6 +33,8 @@ func ParseArgs() Cli {
 		Service:     getArg("--service", ""),
 		Container:   getArg("--container", "app"),
 		Command:     getArg("--command", "bash"),
+		Version:     version,
+		Upgrade:     upgrade,
 	}
 }
 
