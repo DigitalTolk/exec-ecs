@@ -40,7 +40,7 @@ func ParseArgs() Cli {
 	flag.StringVar(&cluster, "cl", "", "ECS cluster name")
 	flag.StringVar(&service, "se", "", "AWS service name")
 	flag.StringVar(&task, "tk", "", "Task ARN")
-	flag.StringVar(&container, "cn", "app", "Container name")
+	flag.StringVar(&container, "cn", "", "Container name")
 	flag.StringVar(&command, "command", "bash", "Command to run in the container")
 	flag.Parse()
 
