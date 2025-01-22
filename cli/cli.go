@@ -16,8 +16,11 @@ type Cli struct {
 }
 
 func ParseArgs() Cli {
-	var debug bool
+	var debug, version, upgrade bool
+
 	flag.BoolVar(&debug, "debug", false, "Enable debug mode for logging AWS commands")
+	flag.BoolVar(&version, "version", false, "Show the current version")
+	flag.BoolVar(&upgrade, "upgrade", false, "Upgrade to the latest version")
 	flag.Parse()
 
 	return Cli{
