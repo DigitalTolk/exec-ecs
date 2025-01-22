@@ -30,10 +30,24 @@ func main() {
 
 	validateSSOSession(ctx, cli, awsCfg)
 
-	clusterArn := selectCluster(ctx, cli, awsCfg)
-	serviceName := selectService(ctx, cli, awsCfg, clusterArn)
-	taskArn := selectTask(ctx, cli, awsCfg, clusterArn, serviceName)
-	container := selectContainer(ctx, cli, awsCfg, clusterArn, taskArn)
+	clusterArn := cli.ClusterArn
+	if clusterArn == "" {
+		clusterArn = selectCluster(ctx, cli, awsCfg)
+	}
+	serviceName := cli.Service
+	if serviceName == "" {
+		serviceName = selectService(ctx, cli, awsCfg, clusterArn)
+	}
+
+	taskArn := cli.TaskArn
+	if taskArn == "" {
+		taskArn = selectTask(ctx, cli, awsCfg, clusterArn, serviceName)
+	}
+
+	container := cli.Container
+	if container == "" {
+		container = selectContainer(ctx, cli, awsCfg, clusterArn, taskArn)
+	}
 
 	executeECSCommand(cli, clusterArn, taskArn, container)
 }
@@ -48,8 +62,12 @@ func initializeCLI(ctx context.Context) *cli.Cli {
 		installer.UpgradeExecECS()
 		os.Exit(0)
 	}
-	cli.Profile = cli.SelectProfile()
-	cli.Region = cli.PromptWithDefault("Choose AWS region", cli.Region, []string{"eu-north-1", "eu-central-1", "eu-west-2"})
+	if cli.Profile == "" {
+		cli.Profile = cli.SelectProfile()
+	}
+	if cli.Region == "" {
+		cli.Region = cli.PromptWithDefault("Choose AWS region", cli.Region, []string{"eu-north-1", "eu-central-1", "eu-west-2"})
+	}
 	return &cli
 }
 

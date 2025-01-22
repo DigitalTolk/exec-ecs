@@ -2,14 +2,15 @@ package cli
 
 import (
 	"flag"
-	"os"
 )
 
 type Cli struct {
 	Interactive bool
 	Profile     string
 	Region      string
+	ClusterArn  string
 	Service     string
+	TaskArn     string
 	Container   string
 	Command     string
 	Debug       bool
@@ -18,31 +19,42 @@ type Cli struct {
 }
 
 func ParseArgs() Cli {
-	var debug, version, upgrade bool
+	var (
+		profile   string
+		region    string
+		cluster   string
+		service   string
+		task      string
+		container string
+		command   string
+		debug     bool
+		version   bool
+		upgrade   bool
+	)
 
 	flag.BoolVar(&debug, "debug", false, "Enable debug mode for logging AWS commands")
 	flag.BoolVar(&version, "version", false, "Show the current version")
 	flag.BoolVar(&upgrade, "upgrade", false, "Upgrade to the latest version")
+	flag.StringVar(&profile, "pr", "", "AWS profile to use")
+	flag.StringVar(&region, "rg", "", "AWS region to use")
+	flag.StringVar(&cluster, "cl", "", "ECS cluster name")
+	flag.StringVar(&service, "se", "", "AWS service name")
+	flag.StringVar(&task, "tk", "", "Task ARN")
+	flag.StringVar(&container, "cn", "app", "Container name")
+	flag.StringVar(&command, "command", "bash", "Command to run in the container")
 	flag.Parse()
 
 	return Cli{
 		Debug:       debug,
 		Interactive: true,
-		Profile:     getArg("-p", "dt-infra"),
-		Region:      getArg("-r", "eu-north-1"),
-		Service:     getArg("--service", ""),
-		Container:   getArg("--container", "app"),
-		Command:     getArg("--command", "bash"),
+		Profile:     profile,
+		Region:      region,
+		ClusterArn:  cluster,
+		Service:     service,
+		TaskArn:     task,
+		Container:   container,
+		Command:     command,
 		Version:     version,
 		Upgrade:     upgrade,
 	}
-}
-
-func getArg(flag, defaultValue string) string {
-	for i, arg := range os.Args {
-		if arg == flag && i+1 < len(os.Args) {
-			return os.Args[i+1]
-		}
-	}
-	return defaultValue
 }
