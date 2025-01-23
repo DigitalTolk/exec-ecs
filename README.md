@@ -11,10 +11,6 @@
 
 ---
 
-## Installation
-
-### Using the Install Script
-
 # Installation
 
 The `exec-ecs` tool can be installed easily on macOS, Linux, and Windows. Follow the appropriate instructions below based on your operating system.
