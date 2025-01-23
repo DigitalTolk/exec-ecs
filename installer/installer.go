@@ -17,7 +17,8 @@ const Version = "v1.1.2"
 
 func CheckAndInstallDependencies() {
 	dependencies := map[string]string{
-		"aws": "AWS CLI is required. Please install it from https://aws.amazon.com/cli/",
+		"aws":                    "AWS CLI is required. Please install it from https://aws.amazon.com/cli/",
+		"session-manager-plugin": "AWS Session Manager Plugin is required. Please install it from https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html",
 	}
 
 	for command, message := range dependencies {
@@ -42,6 +43,8 @@ func InstallCommand(command string) {
 	switch command {
 	case "aws":
 		installAWSCLI(osType)
+	case "session-manager-plugin":
+		installSessionManagerPlugin(osType)
 	default:
 		log.Fatalf("Installation script for %s is not implemented.", command)
 	}
@@ -57,6 +60,26 @@ func installAWSCLI(osType string) {
 		installAWSCLIOnWindows()
 	default:
 		log.Fatalf("Unsupported operating system: %s. Please install AWS CLI manually.", osType)
+	}
+}
+
+func installSessionManagerPlugin(osType string) {
+	switch osType {
+	case "linux":
+		executeCommands([][]string{
+			{"curl", "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/linux_64bit/session-manager-plugin.rpm", "-o", "session-manager-plugin.rpm"},
+			{"sudo", "yum", "install", "-y", "session-manager-plugin.rpm"},
+		})
+	case "darwin":
+		executeCommands([][]string{
+			{"curl", "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/mac/sessionmanager-bundle.zip", "-o", "sessionmanager-bundle.zip"},
+			{"unzip", "sessionmanager-bundle.zip"},
+			{"sudo", "./sessionmanager-bundle/install", "-i", "/usr/local/sessionmanagerplugin", "-b", "/usr/local/bin/session-manager-plugin"},
+		})
+	case "windows":
+		fmt.Println("Please download and install the AWS Session Manager Plugin manually from https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html")
+	default:
+		log.Fatalf("Unsupported operating system: %s. Please install AWS Session Manager Plugin manually.", osType)
 	}
 }
 

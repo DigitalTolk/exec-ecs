@@ -386,6 +386,15 @@ func (c *Cli) SelectService(ctx context.Context, client *ecs.Client, clusterArn 
 	return selectedServiceName, nil
 }
 
+func maskTaskArn(taskArn string) string {
+	// If the ARN is too short to mask, return it as is
+	if len(taskArn) <= 13 {
+		return taskArn
+	}
+	// Keep the first and last 5 characters, mask the rest
+	return taskArn[:3] + strings.Repeat("*", len(taskArn)-13) + taskArn[len(taskArn)-10:]
+}
+
 func (c *Cli) SelectTask(ctx context.Context, client *ecs.Client, clusterArn, serviceName string) (string, error) {
 	var (
 		taskArns  []string
@@ -412,8 +421,23 @@ func (c *Cli) SelectTask(ctx context.Context, client *ecs.Client, clusterArn, se
 	if len(taskArns) == 0 {
 		return "", fmt.Errorf("no tasks found for service %s", serviceName)
 	}
-	selectedTask := c.PromptSelect("Choose ECS task", taskArns)
-	return selectedTask, nil
+
+	// Mask each task ARN before presenting them to the user
+	maskedTaskArns := make([]string, len(taskArns))
+	for i, arn := range taskArns {
+		maskedTaskArns[i] = maskTaskArn(arn)
+	}
+
+	selectedMaskedTask := c.PromptSelect("Choose ECS task", maskedTaskArns)
+
+	// Find the original task ARN corresponding to the masked selection
+	for i, maskedArn := range maskedTaskArns {
+		if maskedArn == selectedMaskedTask {
+			return taskArns[i], nil
+		}
+	}
+
+	return "", fmt.Errorf("selected task not found")
 }
 
 func (c *Cli) SelectContainer(ctx context.Context, client *ecs.Client, clusterArn, taskArn string) (string, error) {

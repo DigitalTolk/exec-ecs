@@ -35,16 +35,34 @@ check_command sudo
 # Configuration
 REPO="DigitalTolk/exec-ecs"
 
-# Get latest release version
-log "Fetching latest release version..."
-VERSION=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+# Parse arguments
+SPECIFIC_VERSION=""
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --version)
+            SPECIFIC_VERSION="$2"
+            shift 2
+            ;;
+        *)
+            error "Unknown argument: $1"
+            exit 1
+            ;;
+    esac
+done
 
-if [[ -z "$VERSION" ]]; then
-    error "Failed to fetch latest version"
-    exit 1
+if [[ -n "$SPECIFIC_VERSION" ]]; then
+    log "Specific version requested: $SPECIFIC_VERSION"
+    VERSION="v$SPECIFIC_VERSION"  # Ensure it includes the 'v' prefix if needed
+else
+    log "Fetching latest release version..."
+    VERSION=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+
+    if [[ -z "$VERSION" ]]; then
+        error "Failed to fetch latest version"
+        exit 1
+    fi
+    log "Latest version: $VERSION"
 fi
-
-log "Latest version: $VERSION"
 
 # Determine the platform
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -61,11 +79,8 @@ case "$OS" in
     darwin)
         PLATFORM="Darwin"
         ;;
-    msys*|mingw*|cygwin*|nt|windows)
-        PLATFORM="Windows"
-        ;;
     *)
-        error "Unsupported OS: $OS"
+        error "Unsupported OS: $OS. Use the Windows .bat file for Windows support."
         exit 1
         ;;
 esac
@@ -90,12 +105,7 @@ case "$ARCH" in
 esac
 
 # Construct the filename and download URL
-EXT="tar.gz"
-if [ "$PLATFORM" = "Windows" ]; then
-    EXT="zip"
-fi
-
-FILENAME="exec-ecs_${PLATFORM}_${ARCH}.${EXT}"
+FILENAME="exec-ecs_${PLATFORM}_${ARCH}.tar.gz"
 URL="https://github.com/$REPO/releases/download/$VERSION/$FILENAME"
 
 # Create temporary directory
@@ -118,46 +128,31 @@ fi
 # Extract the archive
 log "Extracting $FILENAME..."
 cd "$TEMP_DIR"
-if [ "$EXT" = "tar.gz" ]; then
-    if ! tar -xzf "$FILENAME"; then
-        error "Extraction failed"
-        exit 1
-    fi
-elif [ "$EXT" = "zip" ]; then
-    if ! unzip "$FILENAME"; then
-        error "Extraction failed"
-        exit 1
-    fi
-else
-    error "Unknown file extension: $EXT"
+if ! tar -xzf "$FILENAME"; then
+    error "Extraction failed"
     exit 1
 fi
 
 # Install the binary
-if [ "$PLATFORM" != "Windows" ]; then
-    # Check if binary exists
-    if [ ! -f "exec-ecs" ]; then
-        error "Binary not found after extraction"
-        exit 1
-    fi
-
-    log "Installing exec-ecs..."
-    chmod +x exec-ecs
-    if ! sudo mv exec-ecs /usr/local/bin/exec-ecs; then
-        error "Installation failed"
-        exit 1
-    fi
-
-    # Verify installation
-    if command -v exec-ecs >/dev/null 2>&1; then
-        log "exec-ecs installed successfully! Version: $(exec-ecs --version)"
-        log "Run 'exec-ecs --help' to get started."
-    else
-        error "Installation verification failed"
-        exit 1
-    fi
-else
-    log "exec-ecs.exe extracted. Move it to a directory in your PATH to use it."
+if [ ! -f "exec-ecs" ]; then
+    error "Binary not found after extraction"
+    exit 1
 fi
 
-log "Installation completed successfully!!"
+log "Installing exec-ecs..."
+chmod +x exec-ecs
+if ! sudo mv exec-ecs /usr/local/bin/exec-ecs; then
+    error "Installation failed"
+    exit 1
+fi
+
+# Verify installation
+if command -v exec-ecs >/dev/null 2>&1; then
+    log "exec-ecs installed successfully! Version: $(exec-ecs --version)"
+    log "Run 'exec-ecs --help' to get started."
+else
+    error "Installation verification failed"
+    exit 1
+fi
+
+log "Installation completed successfully!"
