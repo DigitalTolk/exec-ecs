@@ -30,10 +30,10 @@ curl -fsSL https://raw.githubusercontent.com/DigitalTolk/exec-ecs/main/install.s
 If you'd like to install a specific version, use the `--version` flag with the install script:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DigitalTolk/exec-ecs/main/install.sh | bash -s -- --version 1.2.3
+curl -fsSL https://raw.githubusercontent.com/DigitalTolk/exec-ecs/main/install.sh | bash -s -- --version 1.1.3
 ```
 
-Replace `1.2.3` with the desired version number. If no version is specified, the latest version will be installed by default.
+Replace `1.1.3` with the desired version number. If no version is specified, the latest version will be installed by default.
 
 ---
 
@@ -57,9 +57,9 @@ Windows users should use the provided batch script.
 3. To install a specific version:
    - Run the script with the desired version number:
      ```bash
-     install-exec-ecs.bat 1.2.3
+     install-exec-ecs.bat 1.1.3
      ```
-   - Replace `1.2.3` with the version you wish to install.
+   - Replace `1.1.3` with the version you wish to install.
 
 4. The script will:
    - Download the `exec-ecs` executable for Windows.
