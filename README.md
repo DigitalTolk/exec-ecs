@@ -44,20 +44,20 @@ Windows users should use the provided batch script.
 ### Steps:
 
 1. Download the installation script:
-   - Visit <https://raw.githubusercontent.com/DigitalTolk/exec-ecs/main/install-exec-ecs.bat>.
-   - Save the file as `install-exec-ecs.bat`.
+   - Visit <https://raw.githubusercontent.com/DigitalTolk/exec-ecs/main/install.bat>.
+   - Save the file as `install.bat`.
 
 2. Run the script:
-   - Right-click the `install-exec-ecs.bat` file and select **Run as Administrator**.
+   - Right-click the `install.bat` file and select **Run as Administrator**.
    - To install the latest version, simply run the script without any arguments:
      ```bash
-     install-exec-ecs.bat
+     install.bat
      ```
 
 3. To install a specific version:
    - Run the script with the desired version number:
      ```bash
-     install-exec-ecs.bat 1.1.3
+     install.bat 1.1.3
      ```
    - Replace `1.1.3` with the version you wish to install.
 
