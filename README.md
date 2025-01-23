@@ -15,11 +15,88 @@
 
 ### Using the Install Script
 
-To install `exec-ecs`, use the following command:
+# Installation
+
+The `exec-ecs` tool can be installed easily on macOS, Linux, and Windows. Follow the appropriate instructions below based on your operating system.
+
+---
+
+## macOS and Linux Installation
+
+To install `exec-ecs` on macOS or Linux, use the following command:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DigitalTolk/exec-ecs/main/install.sh | bash
 ```
+
+### Installing a Specific Version
+
+If you'd like to install a specific version, use the `--version` flag with the install script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DigitalTolk/exec-ecs/main/install.sh | bash -s -- --version 1.2.3
+```
+
+Replace `1.2.3` with the desired version number. If no version is specified, the latest version will be installed by default.
+
+---
+
+## Windows Installation
+
+Windows users should use the provided batch script.
+
+### Steps:
+
+1. Download the installation script:
+   - Visit <https://raw.githubusercontent.com/DigitalTolk/exec-ecs/main/install-exec-ecs.bat>.
+   - Save the file as `install-exec-ecs.bat`.
+
+2. Run the script:
+   - Right-click the `install-exec-ecs.bat` file and select **Run as Administrator**.
+   - To install the latest version, simply run the script without any arguments:
+     ```bash
+     install-exec-ecs.bat
+     ```
+
+3. To install a specific version:
+   - Run the script with the desired version number:
+     ```bash
+     install-exec-ecs.bat 1.2.3
+     ```
+   - Replace `1.2.3` with the version you wish to install.
+
+4. The script will:
+   - Download the `exec-ecs` executable for Windows.
+   - Extract the binary.
+   - Place it in `C:\Program Files\exec-ecs`.
+   - Add it to your system's PATH.
+
+---
+
+## Verifying Installation
+
+After installation, verify that `exec-ecs` is installed correctly by checking its version:
+
+```bash
+exec-ecs --version
+```
+
+On Windows, you may need to restart your terminal or Command Prompt for the changes to take effect.
+
+---
+
+## Uninstallation
+
+To uninstall `exec-ecs`, simply remove the binary:
+
+- **Linux/macOS**: Delete the binary from `/usr/local/bin`:
+  ```bash
+  sudo rm /usr/local/bin/exec-ecs
+  ```
+- **Windows**: Delete the `exec-ecs.exe` file from `C:\Program Files\exec-ecs`.
+
+---
+
 
 ### Manual Installation
 
