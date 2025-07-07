@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -26,6 +27,13 @@ func main() {
 	installer.CheckAndInstallDependencies()
 
 	cli := initializeCLI(ctx)
+
+	// Check for history flag
+	if cli.History {
+		showHistoryAndExecute(cli)
+		return
+	}
+
 	awsCfg := loadAWSConfig(ctx, cli)
 
 	validateSSOSession(ctx, cli, awsCfg)
@@ -176,6 +184,9 @@ func executeECSCommand(cli *cli.Cli, clusterArn, taskArn string, container strin
 	cli.LogAWSCommand(executeCmd[0], executeCmd[1:]...)
 	cmd := exec.Command("aws", executeCmd...)
 
+	// Append to history
+	cli.AppendToHistory("aws " + strings.Join(executeCmd, " "))
+
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		cli.LogUserFriendlyError("Failed to start PTY session", err, "Ensure your system supports pseudo-terminals.", "PTY Setup", 67)
@@ -201,4 +212,22 @@ func createSpinner(suffix string) *spinner.Spinner {
 	sp.Start()
 	sp.Suffix = " " + suffix
 	return sp
+}
+
+// Show history menu and execute selected command
+func showHistoryAndExecute(cli *cli.Cli) {
+	history := cli.GetLastUniqueHistory(5)
+	if len(history) == 0 {
+		fmt.Println("No command history found.")
+		return
+	}
+	selected, err := cli.BubbleteaHistorySelect("Command History (last 5 unique)", history)
+	if err != nil || selected == "" {
+		return
+	}
+	fmt.Println("Executing:", selected)
+	cmd := exec.Command("sh", "-c", selected)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	cmd.Stdin = os.Stdin
+	_ = cmd.Run()
 }

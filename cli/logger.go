@@ -8,6 +8,7 @@ import (
 )
 
 var cmdLogger = log.New(os.Stdout, "\n [AWS CMD] ", log.Ltime)
+var historyFile = os.Getenv("HOME") + "/.ecs_cli_history"
 
 func (c *Cli) LogAWSCommand(cmd string, args ...string) {
 	if c.Debug {
@@ -28,4 +29,36 @@ func (c *Cli) LogUserFriendlyError(message string, err error, potentialFix, file
 	}
 	fmt.Printf("============================\n\n")
 	os.Exit(1)
+}
+
+// Append a command to the history file
+func AppendToHistory(cmd string) {
+	f, err := os.OpenFile(historyFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return // fail silently
+	}
+	defer f.Close()
+	f.WriteString(cmd + "\n")
+}
+
+// Get the last 5 unique commands from history, most recent first
+func GetLastUniqueHistory(n int) []string {
+	data, err := os.ReadFile(historyFile)
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(string(data), "\n")
+	seen := make(map[string]struct{})
+	var unique []string
+	for i := len(lines) - 1; i >= 0 && len(unique) < n; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		if _, ok := seen[line]; !ok {
+			unique = append(unique, line)
+			seen[line] = struct{}{}
+		}
+	}
+	return unique
 }

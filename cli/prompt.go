@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -57,6 +58,7 @@ type menuModel struct {
 	textInput     textinput.Model
 	filterMode    bool
 	page          int
+	historyMode   bool
 }
 
 func initialModel(label string, items []string) menuModel {
@@ -165,6 +167,24 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.page++
 				m.cursor = 0
 			}
+
+		// Add ctrl+h for history
+		case "ctrl+h":
+			// Show history menu
+			history := GetLastUniqueHistory(5)
+			if len(history) == 0 {
+				return m, nil
+			}
+			selected, err := BubbleteaHistorySelect("Command History (last 5 unique)", history)
+			if err == nil && selected != "" {
+				// Execute the selected command
+				fmt.Println("\nExecuting:", selected)
+				cmd := exec.Command("sh", "-c", selected)
+				cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+				cmd.Stdin = os.Stdin
+				_ = cmd.Run()
+			}
+			return m, nil
 		}
 	}
 
@@ -212,7 +232,13 @@ func (m menuModel) View() string {
 	}
 
 	// Help
-	help := "\n↑/↓: Navigate • /: Filter • Enter: Select • q: Quit"
+	if m.historyMode {
+		help := "\nTo go back press esc key"
+		s.WriteString(helpStyle.Render(help))
+		return s.String()
+	}
+
+	help := "\n↑/↓: Navigate • /: Filter • Enter: Select • q: Quit • ctrl+h: History"
 	if m.filterMode {
 		help = "\nEsc: Exit Filter • Enter: Apply Filter"
 	}
@@ -229,6 +255,21 @@ func bubbleteaSelect(label string, items []string) (string, error) {
 		return "", err
 	}
 
+	mm, ok := finalModel.(menuModel)
+	if !ok {
+		return "", fmt.Errorf("unexpected model type")
+	}
+	return mm.choice, nil
+}
+
+func BubbleteaHistorySelect(label string, items []string) (string, error) {
+	m := initialModel(label, items)
+	m.historyMode = true
+	p := tea.NewProgram(m)
+	finalModel, err := p.Run()
+	if err != nil {
+		return "", err
+	}
 	mm, ok := finalModel.(menuModel)
 	if !ok {
 		return "", fmt.Errorf("unexpected model type")
