@@ -195,12 +195,18 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Add ctrl+h for history
 		case "ctrl+h":
-			// Show history menu
+			if m.historyMode || historyMenuOpen {
+				// Already in history mode or menu is open, do nothing
+				return m, nil
+			}
+			historyMenuOpen = true // Set before launching menu to prevent race
 			history := GetLastUniqueHistory(5)
 			if len(history) == 0 {
+				historyMenuOpen = false
 				return m, nil
 			}
 			selected, err := BubbleteaHistorySelect("Command History (last 5 unique)", history)
+			historyMenuOpen = false
 			if err == nil && selected != "" {
 				// Execute the selected command
 				fmt.Println("\nExecuting:", selected)
@@ -275,16 +281,12 @@ func (m menuModel) View() string {
 		return s.String()
 	}
 
-	help := "\n↑/↓: Navigate • /: Filter • Enter: Select • q: Quit"
-	help2 := "\nctrl+b: Go Back • ctrl+h: History"
+	// Concise, ASCII-only help line with separator
+	help := "\n↑↓ Move • Enter Select • / Filter • q Quit • ctrl+b Back • ctrl+h History"
 	if m.filterMode {
-		help = "\nEsc: Exit Filter • Enter: Apply Filter"
-		help2 = ""
+		help = "\nEsc: Exit Filter • Enter Apply Filter"
 	}
 	s.WriteString(helpStyle.Render(help))
-	if help2 != "" {
-		s.WriteString(helpStyle.Render(help2))
-	}
 
 	return s.String()
 }
@@ -304,7 +306,11 @@ func bubbleteaSelect(label string, items []string, defaultSelected string, showG
 	return mm.choice, mm.goBackTriggered, nil
 }
 
+// Prevent multiple history menus from stacking
+var historyMenuOpen bool
+
 func BubbleteaHistorySelect(label string, items []string) (string, error) {
+	historyMenuOpen = true
 	// Format each history item as multiline for display
 	displayItems := make([]string, len(items))
 	for i, cmd := range items {
@@ -329,10 +335,12 @@ func BubbleteaHistorySelect(label string, items []string) (string, error) {
 		p := tea.NewProgram(m)
 		finalModel, err := p.Run()
 		if err != nil {
+			historyMenuOpen = false
 			return "", err
 		}
 		mm, ok := finalModel.(menuModel)
 		if !ok {
+			historyMenuOpen = false
 			return "", fmt.Errorf("unexpected model type")
 		}
 		if mm.choice == clearHistoryOption {
@@ -349,13 +357,16 @@ func BubbleteaHistorySelect(label string, items []string) (string, error) {
 		}
 		// Map the selected display string back to the original command
 		if mm.choice == clearHistoryOption {
+			historyMenuOpen = false
 			return mm.choice, nil
 		}
 		for i, disp := range displayItems {
 			if mm.choice == disp {
+				historyMenuOpen = false
 				return items[i], nil
 			}
 		}
+		historyMenuOpen = false
 		return mm.choice, nil // fallback
 	}
 }
