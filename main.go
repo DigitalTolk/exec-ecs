@@ -34,10 +34,7 @@ func main() {
 		return
 	}
 
-	awsCfg := loadAWSConfig(ctx, cli)
-
-	validateSSOSession(ctx, cli, awsCfg)
-
+	// Restore StepState struct and step constants
 	type StepState struct {
 		Profile    string
 		Region     string
@@ -67,6 +64,8 @@ func main() {
 		finalStep     = 6
 	)
 
+	awsCfg := aws.Config{}
+	awsCfgLoaded := false
 	for step < finalStep {
 		switch step {
 		case stepProfile:
@@ -77,19 +76,21 @@ func main() {
 			}
 			selected, goBack := cli.PromptSelect("Choose AWS profile", profiles, state.Profile, step > stepProfile)
 			if goBack && step > stepProfile {
-				// Clear current and subsequent state
 				state.Profile = ""
 				state.Region = ""
 				state.ClusterArn = ""
 				state.Service = ""
 				state.TaskArn = ""
 				state.Container = ""
+				awsCfgLoaded = false
 				step--
 				continue
 			}
+			if state.Profile != selected {
+				awsCfgLoaded = false
+			}
 			state.Profile = selected
 			cli.Profile = selected
-			// Clear downstream state
 			state.Region = ""
 			state.ClusterArn = ""
 			state.Service = ""
@@ -100,128 +101,135 @@ func main() {
 			regions := []string{"eu-north-1", "eu-central-1", "eu-west-2"}
 			selected, goBack := cli.PromptWithDefault("Choose AWS region", state.Region, regions, true)
 			if goBack {
-				// Clear current and subsequent state
 				state.Region = ""
 				state.ClusterArn = ""
 				state.Service = ""
 				state.TaskArn = ""
 				state.Container = ""
+				awsCfgLoaded = false
 				step--
 				continue
 			}
+			if state.Region != selected {
+				awsCfgLoaded = false
+			}
 			state.Region = selected
 			cli.Region = selected
-			// Clear downstream state
 			state.ClusterArn = ""
 			state.Service = ""
 			state.TaskArn = ""
 			state.Container = ""
 			step++
-		case stepCluster:
-			sp := createSpinner("Connecting to ECS...")
-			ecsClient := ecs.NewFromConfig(loadAWSConfig(ctx, cli))
-			cli.LogAWSCommand("ecs", "list-clusters", "--profile", cli.Profile, "--region", cli.Region)
-			sp.Stop()
-			clusters, clusterArns := cli.ListClusterNamesArns(ctx, ecsClient)
-			if len(clusters) == 0 {
-				fmt.Println("No ECS clusters found. Going back.")
-				state.ClusterArn = ""
+		case stepCluster, stepService, stepTask, stepContainer:
+			if !awsCfgLoaded {
+				awsCfg = loadAWSConfig(ctx, cli)
+				validateSSOSession(ctx, cli, awsCfg)
+				awsCfgLoaded = true
+			}
+			// The rest of the step logic remains unchanged
+			if step == stepCluster {
+				sp := createSpinner("Connecting to ECS...")
+				ecsClient := ecs.NewFromConfig(awsCfg)
+				cli.LogAWSCommand("ecs", "list-clusters", "--profile", cli.Profile, "--region", cli.Region)
+				sp.Stop()
+				clusters, clusterArns := cli.ListClusterNamesArns(ctx, ecsClient)
+				if len(clusters) == 0 {
+					fmt.Println("No ECS clusters found. Going back.")
+					state.ClusterArn = ""
+					state.Service = ""
+					state.TaskArn = ""
+					state.Container = ""
+					step--
+					continue
+				}
+				selected, goBack := cli.PromptSelect("Choose ECS cluster", clusters, getKeyByValue(clusterArns, state.ClusterArn), true)
+				if goBack {
+					state.ClusterArn = ""
+					state.Service = ""
+					state.TaskArn = ""
+					state.Container = ""
+					step--
+					continue
+				}
+				state.ClusterArn = clusterArns[selected]
+				cli.ClusterArn = state.ClusterArn
 				state.Service = ""
 				state.TaskArn = ""
 				state.Container = ""
-				step--
-				continue
-			}
-			selected, goBack := cli.PromptSelect("Choose ECS cluster", clusters, getKeyByValue(clusterArns, state.ClusterArn), true)
-			if goBack {
-				state.ClusterArn = ""
-				state.Service = ""
+				step++
+			} else if step == stepService {
+				sp := createSpinner("Fetching ECS services...")
+				ecsClient := ecs.NewFromConfig(awsCfg)
+				cli.LogAWSCommand("ecs", "list-services", "--cluster", state.ClusterArn, "--profile", cli.Profile, "--region", cli.Region)
+				sp.Stop()
+				services, serviceArns := cli.ListServiceNamesArns(ctx, ecsClient, state.ClusterArn)
+				if len(services) == 0 {
+					fmt.Println("No ECS services found. Going back.")
+					state.Service = ""
+					state.TaskArn = ""
+					state.Container = ""
+					step--
+					continue
+				}
+				selected, goBack := cli.PromptSelect("Choose ECS service", services, getKeyByValue(serviceArns, state.Service), true)
+				if goBack {
+					state.Service = ""
+					state.TaskArn = ""
+					state.Container = ""
+					step--
+					continue
+				}
+				state.Service = serviceArns[selected]
+				cli.Service = state.Service
 				state.TaskArn = ""
 				state.Container = ""
-				step--
-				continue
-			}
-			state.ClusterArn = clusterArns[selected]
-			cli.ClusterArn = state.ClusterArn
-			// Clear downstream state
-			state.Service = ""
-			state.TaskArn = ""
-			state.Container = ""
-			step++
-		case stepService:
-			sp := createSpinner("Fetching ECS services...")
-			ecsClient := ecs.NewFromConfig(loadAWSConfig(ctx, cli))
-			cli.LogAWSCommand("ecs", "list-services", "--cluster", state.ClusterArn, "--profile", cli.Profile, "--region", cli.Region)
-			sp.Stop()
-			services, serviceArns := cli.ListServiceNamesArns(ctx, ecsClient, state.ClusterArn)
-			if len(services) == 0 {
-				fmt.Println("No ECS services found. Going back.")
-				state.Service = ""
-				state.TaskArn = ""
+				step++
+			} else if step == stepTask {
+				sp := createSpinner("Fetching ECS tasks...")
+				ecsClient := ecs.NewFromConfig(awsCfg)
+				cli.LogAWSCommand("ecs", "list-tasks", "--cluster", state.ClusterArn, "--service-name", state.Service, "--profile", cli.Profile, "--region", cli.Region)
+				sp.Stop()
+				tasks, taskArns := cli.ListTaskNamesArns(ctx, ecsClient, state.ClusterArn, state.Service)
+				if len(tasks) == 0 {
+					fmt.Println("No ECS tasks found. Going back.")
+					state.TaskArn = ""
+					state.Container = ""
+					step--
+					continue
+				}
+				selected, goBack := cli.PromptSelect("Choose ECS task", tasks, getKeyByValue(taskArns, state.TaskArn), true)
+				if goBack {
+					state.TaskArn = ""
+					state.Container = ""
+					step--
+					continue
+				}
+				state.TaskArn = taskArns[selected]
+				cli.TaskArn = state.TaskArn
 				state.Container = ""
-				step--
-				continue
+				step++
+			} else if step == stepContainer {
+				sp := createSpinner("Fetching ECS containers...")
+				ecsClient := ecs.NewFromConfig(awsCfg)
+				cli.LogAWSCommand("ecs", "describe-tasks", "--cluster", state.ClusterArn, "--tasks", state.TaskArn, "--profile", cli.Profile, "--region", cli.Region)
+				sp.Stop()
+				containers := cli.ListContainerNames(ctx, ecsClient, state.ClusterArn, state.TaskArn)
+				if len(containers) == 0 {
+					fmt.Println("No containers found. Going back.")
+					state.Container = ""
+					step--
+					continue
+				}
+				selected, goBack := cli.PromptSelect("Choose a container", containers, state.Container, true)
+				if goBack {
+					state.Container = ""
+					step--
+					continue
+				}
+				state.Container = selected
+				cli.Container = state.Container
+				step++
 			}
-			selected, goBack := cli.PromptSelect("Choose ECS service", services, getKeyByValue(serviceArns, state.Service), true)
-			if goBack {
-				state.Service = ""
-				state.TaskArn = ""
-				state.Container = ""
-				step--
-				continue
-			}
-			state.Service = serviceArns[selected]
-			cli.Service = state.Service
-			// Clear downstream state
-			state.TaskArn = ""
-			state.Container = ""
-			step++
-		case stepTask:
-			sp := createSpinner("Fetching ECS tasks...")
-			ecsClient := ecs.NewFromConfig(loadAWSConfig(ctx, cli))
-			cli.LogAWSCommand("ecs", "list-tasks", "--cluster", state.ClusterArn, "--service-name", state.Service, "--profile", cli.Profile, "--region", cli.Region)
-			sp.Stop()
-			tasks, taskArns := cli.ListTaskNamesArns(ctx, ecsClient, state.ClusterArn, state.Service)
-			if len(tasks) == 0 {
-				fmt.Println("No ECS tasks found. Going back.")
-				state.TaskArn = ""
-				state.Container = ""
-				step--
-				continue
-			}
-			selected, goBack := cli.PromptSelect("Choose ECS task", tasks, getKeyByValue(taskArns, state.TaskArn), true)
-			if goBack {
-				state.TaskArn = ""
-				state.Container = ""
-				step--
-				continue
-			}
-			state.TaskArn = taskArns[selected]
-			cli.TaskArn = state.TaskArn
-			// Clear downstream state
-			state.Container = ""
-			step++
-		case stepContainer:
-			sp := createSpinner("Fetching ECS containers...")
-			ecsClient := ecs.NewFromConfig(loadAWSConfig(ctx, cli))
-			cli.LogAWSCommand("ecs", "describe-tasks", "--cluster", state.ClusterArn, "--tasks", state.TaskArn, "--profile", cli.Profile, "--region", cli.Region)
-			sp.Stop()
-			containers := cli.ListContainerNames(ctx, ecsClient, state.ClusterArn, state.TaskArn)
-			if len(containers) == 0 {
-				fmt.Println("No containers found. Going back.")
-				state.Container = ""
-				step--
-				continue
-			}
-			selected, goBack := cli.PromptSelect("Choose a container", containers, state.Container, true)
-			if goBack {
-				state.Container = ""
-				step--
-				continue
-			}
-			state.Container = selected
-			cli.Container = state.Container
-			step++
 		}
 	}
 

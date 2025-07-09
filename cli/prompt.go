@@ -87,6 +87,8 @@ func initialModel(label string, items []string, defaultSelected string, showGoBa
 			}
 		}
 	}
+	page := selectedIdx / itemsPerPage
+	cursor := selectedIdx % itemsPerPage
 
 	return menuModel{
 		items:         allItems,
@@ -94,7 +96,8 @@ func initialModel(label string, items []string, defaultSelected string, showGoBa
 		label:         label,
 		viewport:      viewport.New(80, itemsPerPage+2),
 		textInput:     ti,
-		cursor:        selectedIdx,
+		cursor:        cursor,
+		page:          page,
 	}
 }
 
