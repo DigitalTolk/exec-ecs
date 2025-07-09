@@ -18,6 +18,9 @@ import (
 	"gopkg.in/ini.v1"
 )
 
+// Add a constant for the Go Back option
+const goBackOption = "← Go Back"
+
 const (
 	itemsPerPage = 10
 )
@@ -48,31 +51,50 @@ var (
 )
 
 type menuModel struct {
-	items         []string
-	filteredItems []string
-	cursor        int
-	choice        string
-	label         string
-	quitting      bool
-	viewport      viewport.Model
-	textInput     textinput.Model
-	filterMode    bool
-	page          int
-	historyMode   bool
+	items           []string
+	filteredItems   []string
+	cursor          int
+	choice          string
+	label           string
+	quitting        bool
+	viewport        viewport.Model
+	textInput       textinput.Model
+	filterMode      bool
+	page            int
+	historyMode     bool
+	goBackTriggered bool
 }
 
-func initialModel(label string, items []string) menuModel {
+func initialModel(label string, items []string, defaultSelected string, showGoBack bool) menuModel {
 	ti := textinput.New()
 	ti.Placeholder = "Type to filter..."
 	ti.CharLimit = 50
 	ti.Width = 30
 
+	// Insert Go Back option if needed
+	allItems := items
+	if showGoBack {
+		allItems = append([]string{goBackOption}, items...)
+	}
+
+	// Find the index of the default selected value
+	selectedIdx := 0
+	if defaultSelected != "" {
+		for i, item := range allItems {
+			if item == defaultSelected {
+				selectedIdx = i
+				break
+			}
+		}
+	}
+
 	return menuModel{
-		items:         items,
-		filteredItems: items,
+		items:         allItems,
+		filteredItems: allItems,
 		label:         label,
 		viewport:      viewport.New(80, itemsPerPage+2),
 		textInput:     ti,
+		cursor:        selectedIdx,
 	}
 }
 
@@ -130,7 +152,13 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if len(m.filteredItems) > 0 {
-				m.choice = m.filteredItems[m.cursor+m.page*itemsPerPage]
+				choice := m.filteredItems[m.cursor+m.page*itemsPerPage]
+				if choice == goBackOption {
+					m.goBackTriggered = true
+					m.quitting = true
+					return m, tea.Quit
+				}
+				m.choice = choice
 				m.quitting = true
 				return m, tea.Quit
 			}
@@ -185,6 +213,12 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_ = cmd.Run()
 			}
 			return m, nil
+
+		// Add ctrl+left for go back
+		case "ctrl+left":
+			m.goBackTriggered = true
+			m.quitting = true
+			return m, tea.Quit
 		}
 	}
 
@@ -247,23 +281,23 @@ func (m menuModel) View() string {
 	return s.String()
 }
 
-func bubbleteaSelect(label string, items []string) (string, error) {
-	m := initialModel(label, items)
+func bubbleteaSelect(label string, items []string, defaultSelected string, showGoBack bool) (string, bool, error) {
+	m := initialModel(label, items, defaultSelected, showGoBack)
 	p := tea.NewProgram(m)
 	finalModel, err := p.Run()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 
 	mm, ok := finalModel.(menuModel)
 	if !ok {
-		return "", fmt.Errorf("unexpected model type")
+		return "", false, fmt.Errorf("unexpected model type")
 	}
-	return mm.choice, nil
+	return mm.choice, mm.goBackTriggered, nil
 }
 
 func BubbleteaHistorySelect(label string, items []string) (string, error) {
-	m := initialModel(label, items)
+	m := initialModel(label, items, "", false)
 	m.historyMode = true
 	p := tea.NewProgram(m)
 	finalModel, err := p.Run()
@@ -277,28 +311,9 @@ func BubbleteaHistorySelect(label string, items []string) (string, error) {
 	return mm.choice, nil
 }
 
-func (c *Cli) PromptSelect(label string, items []string) string {
-	selectedItem, err := bubbleteaSelect(label, items)
-	if err != nil {
-		log.Fatalf("Selection prompt failed: %v", err)
-	}
-	if selectedItem == "" {
-		log.Fatalf("No selection made, exiting.")
-	}
-	return selectedItem
-}
-
-func (c *Cli) PromptWithDefault(label, defaultValue string, items []string) string {
-	// allItems := append([]string{defaultValue}, items...)
+func (c *Cli) PromptWithDefault(label, defaultValue string, items []string, showGoBack bool) (string, bool) {
 	allItems := items
-	selectedItem, err := bubbleteaSelect(label, allItems)
-	if err != nil {
-		log.Fatalf("Selection prompt failed: %v", err)
-	}
-	if selectedItem == "" {
-		log.Fatalf("No selection made, exiting.")
-	}
-	return selectedItem
+	return c.PromptSelect(label, allItems, defaultValue, showGoBack)
 }
 
 // Helper function since Go 1.21's min() is not yet widely available
@@ -373,7 +388,7 @@ func (c *Cli) SelectProfile() string {
 	}
 
 	// Let user choose from these profiles via Bubble Tea
-	selectedProfile := c.PromptSelect("Choose AWS profile", profiles)
+	selectedProfile, _ := c.PromptSelect("Choose AWS profile", profiles, "", false)
 	return selectedProfile
 }
 
@@ -395,7 +410,7 @@ func (c *Cli) SelectCluster(ctx context.Context, client *ecs.Client) (string, er
 	}
 
 	// Let the user pick from the simplified cluster names.
-	selectedClusterName := c.PromptSelect("Choose ECS cluster", clusterNames)
+	selectedClusterName, _ := c.PromptSelect("Choose ECS cluster", clusterNames, "", false)
 
 	return selectedClusterName, nil
 }
@@ -422,7 +437,7 @@ func (c *Cli) SelectService(ctx context.Context, client *ecs.Client, clusterArn 
 	}
 
 	// Show only the service names in the prompt
-	selectedServiceName := c.PromptSelect("Choose ECS service", serviceNames)
+	selectedServiceName, _ := c.PromptSelect("Choose ECS service", serviceNames, "", false)
 
 	return selectedServiceName, nil
 }
@@ -469,7 +484,7 @@ func (c *Cli) SelectTask(ctx context.Context, client *ecs.Client, clusterArn, se
 		maskedTaskArns[i] = maskTaskArn(arn)
 	}
 
-	selectedMaskedTask := c.PromptSelect("Choose ECS task", maskedTaskArns)
+	selectedMaskedTask, _ := c.PromptSelect("Choose ECS task", maskedTaskArns, "", false)
 
 	// Find the original task ARN corresponding to the masked selection
 	for i, maskedArn := range maskedTaskArns {
@@ -505,6 +520,6 @@ func (c *Cli) SelectContainer(ctx context.Context, client *ecs.Client, clusterAr
 		}
 	}
 
-	selectedContainer := c.PromptSelect("Choose a container", containerNames)
+	selectedContainer, _ := c.PromptSelect("Choose a container", containerNames, "", false)
 	return selectedContainer, nil
 }

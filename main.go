@@ -38,26 +38,194 @@ func main() {
 
 	validateSSOSession(ctx, cli, awsCfg)
 
-	clusterArn := cli.ClusterArn
-	if clusterArn == "" {
-		clusterArn = selectCluster(ctx, cli, awsCfg)
-	}
-	serviceName := cli.Service
-	if serviceName == "" {
-		serviceName = selectService(ctx, cli, awsCfg, clusterArn)
-	}
-
-	taskArn := cli.TaskArn
-	if taskArn == "" {
-		taskArn = selectTask(ctx, cli, awsCfg, clusterArn, serviceName)
+	type StepState struct {
+		Profile    string
+		Region     string
+		ClusterArn string
+		Service    string
+		TaskArn    string
+		Container  string
 	}
 
-	container := cli.Container
-	if container == "" {
-		container = selectContainer(ctx, cli, awsCfg, clusterArn, taskArn)
+	state := StepState{
+		Profile:    cli.Profile,
+		Region:     cli.Region,
+		ClusterArn: cli.ClusterArn,
+		Service:    cli.Service,
+		TaskArn:    cli.TaskArn,
+		Container:  cli.Container,
 	}
 
-	executeECSCommand(cli, clusterArn, taskArn, container)
+	step := 0
+	const (
+		stepProfile   = 0
+		stepRegion    = 1
+		stepCluster   = 2
+		stepService   = 3
+		stepTask      = 4
+		stepContainer = 5
+		finalStep     = 6
+	)
+
+	for step < finalStep {
+		switch step {
+		case stepProfile:
+			profiles := cli.SelectProfileList()
+			if len(profiles) == 0 {
+				fmt.Println("No AWS profiles found. Exiting.")
+				os.Exit(1)
+			}
+			selected, goBack := cli.PromptSelect("Choose AWS profile", profiles, state.Profile, step > stepProfile)
+			if goBack && step > stepProfile {
+				// Clear current and subsequent state
+				state.Profile = ""
+				state.Region = ""
+				state.ClusterArn = ""
+				state.Service = ""
+				state.TaskArn = ""
+				state.Container = ""
+				step--
+				continue
+			}
+			state.Profile = selected
+			cli.Profile = selected
+			// Clear downstream state
+			state.Region = ""
+			state.ClusterArn = ""
+			state.Service = ""
+			state.TaskArn = ""
+			state.Container = ""
+			step++
+		case stepRegion:
+			regions := []string{"eu-north-1", "eu-central-1", "eu-west-2"}
+			selected, goBack := cli.PromptWithDefault("Choose AWS region", state.Region, regions, true)
+			if goBack {
+				// Clear current and subsequent state
+				state.Region = ""
+				state.ClusterArn = ""
+				state.Service = ""
+				state.TaskArn = ""
+				state.Container = ""
+				step--
+				continue
+			}
+			state.Region = selected
+			cli.Region = selected
+			// Clear downstream state
+			state.ClusterArn = ""
+			state.Service = ""
+			state.TaskArn = ""
+			state.Container = ""
+			step++
+		case stepCluster:
+			sp := createSpinner("Connecting to ECS...")
+			ecsClient := ecs.NewFromConfig(loadAWSConfig(ctx, cli))
+			cli.LogAWSCommand("ecs", "list-clusters", "--profile", cli.Profile, "--region", cli.Region)
+			sp.Stop()
+			clusters, clusterArns := cli.ListClusterNamesArns(ctx, ecsClient)
+			if len(clusters) == 0 {
+				fmt.Println("No ECS clusters found. Going back.")
+				state.ClusterArn = ""
+				state.Service = ""
+				state.TaskArn = ""
+				state.Container = ""
+				step--
+				continue
+			}
+			selected, goBack := cli.PromptSelect("Choose ECS cluster", clusters, getKeyByValue(clusterArns, state.ClusterArn), true)
+			if goBack {
+				state.ClusterArn = ""
+				state.Service = ""
+				state.TaskArn = ""
+				state.Container = ""
+				step--
+				continue
+			}
+			state.ClusterArn = clusterArns[selected]
+			cli.ClusterArn = state.ClusterArn
+			// Clear downstream state
+			state.Service = ""
+			state.TaskArn = ""
+			state.Container = ""
+			step++
+		case stepService:
+			sp := createSpinner("Fetching ECS services...")
+			ecsClient := ecs.NewFromConfig(loadAWSConfig(ctx, cli))
+			cli.LogAWSCommand("ecs", "list-services", "--cluster", state.ClusterArn, "--profile", cli.Profile, "--region", cli.Region)
+			sp.Stop()
+			services, serviceArns := cli.ListServiceNamesArns(ctx, ecsClient, state.ClusterArn)
+			if len(services) == 0 {
+				fmt.Println("No ECS services found. Going back.")
+				state.Service = ""
+				state.TaskArn = ""
+				state.Container = ""
+				step--
+				continue
+			}
+			selected, goBack := cli.PromptSelect("Choose ECS service", services, getKeyByValue(serviceArns, state.Service), true)
+			if goBack {
+				state.Service = ""
+				state.TaskArn = ""
+				state.Container = ""
+				step--
+				continue
+			}
+			state.Service = serviceArns[selected]
+			cli.Service = state.Service
+			// Clear downstream state
+			state.TaskArn = ""
+			state.Container = ""
+			step++
+		case stepTask:
+			sp := createSpinner("Fetching ECS tasks...")
+			ecsClient := ecs.NewFromConfig(loadAWSConfig(ctx, cli))
+			cli.LogAWSCommand("ecs", "list-tasks", "--cluster", state.ClusterArn, "--service-name", state.Service, "--profile", cli.Profile, "--region", cli.Region)
+			sp.Stop()
+			tasks, taskArns := cli.ListTaskNamesArns(ctx, ecsClient, state.ClusterArn, state.Service)
+			if len(tasks) == 0 {
+				fmt.Println("No ECS tasks found. Going back.")
+				state.TaskArn = ""
+				state.Container = ""
+				step--
+				continue
+			}
+			selected, goBack := cli.PromptSelect("Choose ECS task", tasks, getKeyByValue(taskArns, state.TaskArn), true)
+			if goBack {
+				state.TaskArn = ""
+				state.Container = ""
+				step--
+				continue
+			}
+			state.TaskArn = taskArns[selected]
+			cli.TaskArn = state.TaskArn
+			// Clear downstream state
+			state.Container = ""
+			step++
+		case stepContainer:
+			sp := createSpinner("Fetching ECS containers...")
+			ecsClient := ecs.NewFromConfig(loadAWSConfig(ctx, cli))
+			cli.LogAWSCommand("ecs", "describe-tasks", "--cluster", state.ClusterArn, "--tasks", state.TaskArn, "--profile", cli.Profile, "--region", cli.Region)
+			sp.Stop()
+			containers := cli.ListContainerNames(ctx, ecsClient, state.ClusterArn, state.TaskArn)
+			if len(containers) == 0 {
+				fmt.Println("No containers found. Going back.")
+				state.Container = ""
+				step--
+				continue
+			}
+			selected, goBack := cli.PromptSelect("Choose a container", containers, state.Container, true)
+			if goBack {
+				state.Container = ""
+				step--
+				continue
+			}
+			state.Container = selected
+			cli.Container = state.Container
+			step++
+		}
+	}
+
+	executeECSCommand(cli, state.ClusterArn, state.TaskArn, state.Container)
 }
 
 func initializeCLI(ctx context.Context) *cli.Cli {
@@ -70,12 +238,7 @@ func initializeCLI(ctx context.Context) *cli.Cli {
 		installer.UpgradeExecECS()
 		os.Exit(0)
 	}
-	if cli.Profile == "" {
-		cli.Profile = cli.SelectProfile()
-	}
-	if cli.Region == "" {
-		cli.Region = cli.PromptWithDefault("Choose AWS region", cli.Region, []string{"eu-north-1", "eu-central-1", "eu-west-2"})
-	}
+	// Remove profile/region selection from here
 	return &cli
 }
 
@@ -230,4 +393,14 @@ func showHistoryAndExecute(cli *cli.Cli) {
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	cmd.Stdin = os.Stdin
 	_ = cmd.Run()
+}
+
+// Helper to get key by value from map[string]string
+func getKeyByValue(m map[string]string, value string) string {
+	for k, v := range m {
+		if v == value {
+			return k
+		}
+	}
+	return ""
 }
