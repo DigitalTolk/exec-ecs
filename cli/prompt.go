@@ -71,11 +71,8 @@ func initialModel(label string, items []string, defaultSelected string, showGoBa
 	ti.CharLimit = 50
 	ti.Width = 30
 
-	// Insert Go Back option if needed
+	// Do NOT insert Go Back option in the list anymore
 	allItems := items
-	if showGoBack {
-		allItems = append([]string{goBackOption}, items...)
-	}
 
 	// Find the index of the default selected value
 	selectedIdx := 0
@@ -156,11 +153,6 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if len(m.filteredItems) > 0 {
 				choice := m.filteredItems[m.cursor+m.page*itemsPerPage]
-				if choice == goBackOption {
-					m.goBackTriggered = true
-					m.quitting = true
-					return m, tea.Quit
-				}
 				m.choice = choice
 				m.quitting = true
 				return m, tea.Quit
@@ -222,6 +214,12 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.goBackTriggered = true
 			m.quitting = true
 			return m, tea.Quit
+
+		// Add 'ctrl+b' for go back
+		case "ctrl+b":
+			m.goBackTriggered = true
+			m.quitting = true
+			return m, tea.Quit
 		}
 	}
 
@@ -275,7 +273,7 @@ func (m menuModel) View() string {
 		return s.String()
 	}
 
-	help := "\n↑/↓: Navigate • /: Filter • Enter: Select • q: Quit • ctrl+h: History"
+	help := "\n↑/↓: Navigate • /: Filter • Enter: Select • q: Quit • ctrl+b: Go Back • ctrl+h: History"
 	if m.filterMode {
 		help = "\nEsc: Exit Filter • Enter: Apply Filter"
 	}
