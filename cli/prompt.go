@@ -25,6 +25,8 @@ const (
 	itemsPerPage = 10
 )
 
+const clearHistoryOption = "🗑️  Clear History"
+
 var (
 	// Styling
 	titleStyle = lipgloss.NewStyle().
@@ -273,11 +275,16 @@ func (m menuModel) View() string {
 		return s.String()
 	}
 
-	help := "\n↑/↓: Navigate • /: Filter • Enter: Select • q: Quit • ctrl+b: Go Back • ctrl+h: History"
+	help := "\n↑/↓: Navigate • /: Filter • Enter: Select • q: Quit"
+	help2 := "\nctrl+b: Go Back • ctrl+h: History"
 	if m.filterMode {
 		help = "\nEsc: Exit Filter • Enter: Apply Filter"
+		help2 = ""
 	}
 	s.WriteString(helpStyle.Render(help))
+	if help2 != "" {
+		s.WriteString(helpStyle.Render(help2))
+	}
 
 	return s.String()
 }
@@ -298,18 +305,59 @@ func bubbleteaSelect(label string, items []string, defaultSelected string, showG
 }
 
 func BubbleteaHistorySelect(label string, items []string) (string, error) {
-	m := initialModel(label, items, "", false)
+	// Format each history item as multiline for display
+	displayItems := make([]string, len(items))
+	for i, cmd := range items {
+		// Insert a newline after every 80 characters for readability
+		var formatted strings.Builder
+		count := 0
+		for _, r := range cmd {
+			formatted.WriteRune(r)
+			count++
+			if count >= 80 && r == ' ' {
+				formatted.WriteRune('\n')
+				count = 0
+			}
+		}
+		displayItems[i] = formatted.String()
+	}
+	// Add 'Clear History' option at the bottom
+	allItems := append(displayItems, clearHistoryOption)
+	m := initialModel(label, allItems, "", false)
 	m.historyMode = true
-	p := tea.NewProgram(m)
-	finalModel, err := p.Run()
-	if err != nil {
-		return "", err
+	for {
+		p := tea.NewProgram(m)
+		finalModel, err := p.Run()
+		if err != nil {
+			return "", err
+		}
+		mm, ok := finalModel.(menuModel)
+		if !ok {
+			return "", fmt.Errorf("unexpected model type")
+		}
+		if mm.choice == clearHistoryOption {
+			// Clear the history file
+			historyFile := os.Getenv("HOME") + "/.ecs_cli_history"
+			_ = os.Remove(historyFile)
+			// Show a message and re-show the menu (now empty)
+			fmt.Println("History cleared.")
+			// Remove all items except clear option
+			allItems = []string{clearHistoryOption}
+			m = initialModel(label, allItems, "", false)
+			m.historyMode = true
+			continue
+		}
+		// Map the selected display string back to the original command
+		if mm.choice == clearHistoryOption {
+			return mm.choice, nil
+		}
+		for i, disp := range displayItems {
+			if mm.choice == disp {
+				return items[i], nil
+			}
+		}
+		return mm.choice, nil // fallback
 	}
-	mm, ok := finalModel.(menuModel)
-	if !ok {
-		return "", fmt.Errorf("unexpected model type")
-	}
-	return mm.choice, nil
 }
 
 func (c *Cli) PromptWithDefault(label, defaultValue string, items []string, showGoBack bool) (string, bool) {
