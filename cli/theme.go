@@ -33,7 +33,7 @@ type Theme struct {
 
 var (
 	SimpleCIDETheme = &Theme{
-		Name:                 "Simple C IDE",
+		Name:                 "Turbo C++",
 		TitleStyle:           lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("4")).Align(lipgloss.Center),
 		ItemStyle:            lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("17")).PaddingLeft(2),
 		ItemStyleAlt:         lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("18")).PaddingLeft(2),

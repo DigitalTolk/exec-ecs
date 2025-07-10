@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"sync"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
@@ -374,8 +376,24 @@ func setupTerminalForPTY(ptmx *os.File) {
 	}
 	defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }()
 
-	go func() { _, _ = io.Copy(ptmx, os.Stdin) }()
-	_, _ = io.Copy(os.Stdout, ptmx)
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// 1-byte buffer for stdin -> ptmx (lowest latency for keystrokes)
+	go func() {
+		buf := make([]byte, 1)
+		_, _ = io.CopyBuffer(ptmx, os.Stdin, buf)
+		wg.Done()
+	}()
+
+	// 1KB buffer for ptmx -> stdout (output can be buffered a bit more)
+	go func() {
+		buf := make([]byte, 1024)
+		_, _ = io.CopyBuffer(os.Stdout, ptmx, buf)
+		wg.Done()
+	}()
+
+	wg.Wait()
 }
 
 func createSpinner(suffix string) *spinner.Spinner {
