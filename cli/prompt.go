@@ -28,28 +28,57 @@ const (
 const clearHistoryOption = "🗑️  Clear History"
 
 var (
+	// Pastel color palette with dark background
+	pastelBlue    = lipgloss.Color("#A7C7E7")
+	pastelGreen   = lipgloss.Color("#B5EAD7")
+	pastelPink    = lipgloss.Color("#FFDAC1")
+	pastelYellow  = lipgloss.Color("#FFF5BA")
+	pastelPurple  = lipgloss.Color("#C7CEEA")
+	pastelGray    = lipgloss.Color("#232946") // dark background
+	pastelGrayAlt = lipgloss.Color("#2d3250") // alternate row
+	pastelText    = lipgloss.Color("#eaeaea")
+	pastelAccent  = lipgloss.Color("#ffd6e0") // for selected border/accent
+
 	// Styling
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("205")).
-			MarginBottom(1)
+			Foreground(pastelText).
+			Background(pastelBlue).
+			Padding(0, 1).
+			MarginBottom(1).
+			Border(lipgloss.NormalBorder(), true).
+			BorderForeground(pastelBlue)
 
 	itemStyle = lipgloss.NewStyle().
-			PaddingLeft(4)
+			PaddingLeft(2).
+			Foreground(pastelText).
+			Background(pastelGray)
+
+	itemStyleAlt = lipgloss.NewStyle().
+			PaddingLeft(2).
+			Foreground(pastelText).
+			Background(pastelGrayAlt)
 
 	selectedItemStyle = lipgloss.NewStyle().
 				PaddingLeft(2).
-				Foreground(lipgloss.Color("205")).
-				Bold(true)
+				Foreground(pastelGray).
+				Background(pastelAccent).
+				Bold(true).
+				Border(lipgloss.DoubleBorder(), true).
+				BorderForeground(pastelAccent)
 
 	filterStyle = lipgloss.NewStyle().
-			PaddingLeft(4).
+			PaddingLeft(2).
 			MarginTop(1).
-			MarginBottom(1)
+			MarginBottom(1).
+			Foreground(pastelGray).
+			Background(pastelYellow)
 
 	helpStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241")).
-			MarginTop(1)
+			Foreground(pastelText).
+			Background(pastelPurple).
+			MarginTop(1).
+			Padding(0, 1)
 )
 
 type menuModel struct {
@@ -119,6 +148,15 @@ func (m *menuModel) filterItems(filter string) {
 	m.filteredItems = filtered
 	m.cursor = 0
 	m.page = 0
+}
+
+// Reset menuModel to initial state for current items
+func (m *menuModel) reset() {
+	m.filteredItems = m.items
+	m.cursor = 0
+	m.page = 0
+	m.filterMode = false
+	m.textInput.SetValue("")
 }
 
 func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -215,7 +253,9 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmd.Stdin = os.Stdin
 				_ = cmd.Run()
 			}
-			return m, nil
+			// Reset menu state after returning from history
+			m.reset()
+			return m, tea.ClearScreen
 
 		// Add ctrl+left for go back
 		case "ctrl+left":
@@ -262,7 +302,7 @@ func (m menuModel) View() string {
 	for i := start; i < end; i++ {
 		item := m.filteredItems[i]
 		if i-start == m.cursor {
-			s.WriteString(selectedItemStyle.Render("➜ " + item))
+			s.WriteString(selectedItemStyle.Render("▶ " + item))
 		} else {
 			s.WriteString(itemStyle.Render(item))
 		}
@@ -291,26 +331,136 @@ func (m menuModel) View() string {
 	return s.String()
 }
 
+// IDE-style model for full-terminal UI
+type ideModel struct {
+	menu   menuModel
+	width  int
+	height int
+}
+
+func (m ideModel) Init() tea.Cmd {
+	return m.menu.Init()
+}
+
+func (m ideModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.menu.viewport.Width = msg.Width - 4
+		m.menu.viewport.Height = msg.Height - 6
+		return m, nil
+	}
+	updated, cmd := m.menu.Update(msg)
+	m.menu = updated.(menuModel)
+	return m, cmd
+}
+
+func (m ideModel) View() string {
+	// Title bar (centered)
+	titleText := "EXEC ECS"
+	title := lipgloss.NewStyle().
+		Background(pastelBlue).
+		Foreground(pastelText).
+		Bold(true).
+		Width(m.width).
+		Align(lipgloss.Center).
+		Render(titleText)
+
+	// Main area (menu)
+	mainBox := lipgloss.NewStyle().
+		Border(lipgloss.DoubleBorder(), true).
+		BorderForeground(pastelBlue).
+		Background(pastelGray).
+		Padding(1, 2).
+		Width(m.width - 2).
+		Height(m.height - 4).
+		Render(m.menu.menuViewOnly())
+
+	// Status/help bar
+	help := m.menu.menuHelpOnly()
+	status := lipgloss.NewStyle().
+		Background(pastelPurple).
+		Foreground(pastelText).
+		Padding(0, 2).
+		Width(m.width).
+		Render(help)
+
+	// Compose
+	return title + "\n" + mainBox + "\n" + status
+}
+
+// Split menuModel.View into menuViewOnly (main area) and menuHelpOnly (help bar)
+func (m menuModel) menuViewOnly() string {
+	if m.quitting {
+		return ""
+	}
+	var s strings.Builder
+	// Title (inside main area)
+	s.WriteString(titleStyle.Render(m.label))
+	// Filter input
+	if m.filterMode {
+		s.WriteString(filterStyle.Render("Filter: " + m.textInput.View()))
+	}
+	// Items with alternating backgrounds
+	start := m.page * itemsPerPage
+	end := min(start+itemsPerPage, len(m.filteredItems))
+	s.WriteString("\n")
+	for i := start; i < end; i++ {
+		item := m.filteredItems[i]
+		style := itemStyle
+		if i%2 == 1 {
+			style = itemStyleAlt
+		}
+		if i-start == m.cursor {
+			s.WriteString(selectedItemStyle.Render("▶ " + item))
+		} else {
+			s.WriteString(style.Render(item))
+		}
+		s.WriteString("\n")
+	}
+	// Pagination info
+	if len(m.filteredItems) > itemsPerPage {
+		s.WriteString(fmt.Sprintf("\nPage %d/%d", m.page+1, (len(m.filteredItems)-1)/itemsPerPage+1))
+	}
+	if m.historyMode {
+		s.WriteString("\nTo go back press esc key")
+	}
+	return s.String()
+}
+
+func (m menuModel) menuHelpOnly() string {
+	if m.historyMode {
+		return "To go back press esc key"
+	}
+	help := "↑↓ Move • Enter Select • / Filter • q Quit • ctrl+b Back • ctrl+h History"
+	if m.filterMode {
+		help = "Esc: Exit Filter • Enter Apply Filter"
+	}
+	return help
+}
+
+// Update bubbleteaSelect to use ideModel
 func bubbleteaSelect(label string, items []string, defaultSelected string, showGoBack bool) (string, bool, error) {
 	m := initialModel(label, items, defaultSelected, showGoBack)
-	p := tea.NewProgram(m)
+	p := tea.NewProgram(ideModel{menu: m})
 	finalModel, err := p.Run()
 	if err != nil {
 		return "", false, err
 	}
-
-	mm, ok := finalModel.(menuModel)
+	im, ok := finalModel.(ideModel)
 	if !ok {
 		return "", false, fmt.Errorf("unexpected model type")
 	}
+	mm := im.menu
 	return mm.choice, mm.goBackTriggered, nil
 }
 
 // Prevent multiple history menus from stacking
 var historyMenuOpen bool
 
+// Update BubbleteaHistorySelect to use ideModel
 func BubbleteaHistorySelect(label string, items []string) (string, error) {
-	historyMenuOpen = true
 	// Format each history item as multiline for display
 	displayItems := make([]string, len(items))
 	for i, cmd := range items {
@@ -332,17 +482,18 @@ func BubbleteaHistorySelect(label string, items []string) (string, error) {
 	m := initialModel(label, allItems, "", false)
 	m.historyMode = true
 	for {
-		p := tea.NewProgram(m)
+		p := tea.NewProgram(ideModel{menu: m})
 		finalModel, err := p.Run()
 		if err != nil {
 			historyMenuOpen = false
 			return "", err
 		}
-		mm, ok := finalModel.(menuModel)
+		im, ok := finalModel.(ideModel)
 		if !ok {
 			historyMenuOpen = false
 			return "", fmt.Errorf("unexpected model type")
 		}
+		mm := im.menu
 		if mm.choice == clearHistoryOption {
 			// Clear the history file
 			historyFile := os.Getenv("HOME") + "/.ecs_cli_history"
