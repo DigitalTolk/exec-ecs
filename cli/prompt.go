@@ -264,9 +264,9 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				SetThemeByName(selected)
 				SaveThemeSelection(selected)
 			}
-			// Always reset and redraw, even if theme didn't change
+			// Always reset and force a full redraw, even if theme didn't change
 			m.reset()
-			return m, tea.ClearScreen
+			return m, tea.Batch(tea.ClearScreen, tea.EnterAltScreen)
 		// Add ctrl+left for go back
 		case "ctrl+left":
 			m.goBackTriggered = true
