@@ -256,7 +256,17 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Reset menu state after returning from history
 			m.reset()
 			return m, tea.ClearScreen
-
+		// Add ctrl+t for theme selection
+		case "ctrl+t":
+			themeNames := GetThemeNames()
+			selected, _, err := bubbleteaSelect("Select Theme", themeNames, CurrentTheme.Name, false)
+			if err == nil && selected != "" {
+				SetThemeByName(selected)
+				SaveThemeSelection(selected)
+			}
+			// Always reset and redraw, even if theme didn't change
+			m.reset()
+			return m, tea.ClearScreen
 		// Add ctrl+left for go back
 		case "ctrl+left":
 			m.goBackTriggered = true
@@ -288,11 +298,11 @@ func (m menuModel) View() string {
 	var s strings.Builder
 
 	// Title
-	s.WriteString(titleStyle.Render(m.label))
+	s.WriteString(CurrentTheme.TitleStyle.Render(m.label))
 
 	// Filter input
 	if m.filterMode {
-		s.WriteString(filterStyle.Render("Filter: " + m.textInput.View()))
+		s.WriteString(CurrentTheme.FilterStyle.Render("Filter: " + m.textInput.View()))
 	}
 
 	// Items
@@ -302,9 +312,9 @@ func (m menuModel) View() string {
 	for i := start; i < end; i++ {
 		item := m.filteredItems[i]
 		if i-start == m.cursor {
-			s.WriteString(selectedItemStyle.Render("▶ " + item))
+			s.WriteString(CurrentTheme.SelectedItem.Render("▶ " + item))
 		} else {
-			s.WriteString(itemStyle.Render(item))
+			s.WriteString(CurrentTheme.ItemStyle.Render(item))
 		}
 		s.WriteString("\n")
 	}
@@ -317,7 +327,7 @@ func (m menuModel) View() string {
 	// Help
 	if m.historyMode {
 		help := "\nTo go back press esc key"
-		s.WriteString(helpStyle.Render(help))
+		s.WriteString(CurrentTheme.HelpStyle.Render(help))
 		return s.String()
 	}
 
@@ -326,7 +336,7 @@ func (m menuModel) View() string {
 	if m.filterMode {
 		help = "\nEsc: Exit Filter • Enter Apply Filter"
 	}
-	s.WriteString(helpStyle.Render(help))
+	s.WriteString(CurrentTheme.HelpStyle.Render(help))
 
 	return s.String()
 }
@@ -357,36 +367,25 @@ func (m ideModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m ideModel) View() string {
-	// Title bar (centered)
-	titleText := "EXEC ECS"
-	title := lipgloss.NewStyle().
-		Background(pastelBlue).
-		Foreground(pastelText).
-		Bold(true).
-		Width(m.width).
-		Align(lipgloss.Center).
-		Render(titleText)
-
-	// Main area (menu)
+	// Main area (menu) with border title
 	mainBox := lipgloss.NewStyle().
-		Border(lipgloss.DoubleBorder(), true).
-		BorderForeground(pastelBlue).
-		Background(pastelGray).
+		Border(CurrentTheme.BorderStyle, true).
+		BorderForeground(CurrentTheme.MainBorder).
+		Background(CurrentTheme.MainBg).
 		Padding(1, 2).
 		Width(m.width - 2).
 		Height(m.height - 4).
 		Render(m.menu.menuViewOnly())
-
 	// Status/help bar
 	help := m.menu.menuHelpOnly()
 	status := lipgloss.NewStyle().
-		Background(pastelPurple).
-		Foreground(pastelText).
+		Background(CurrentTheme.StatusBg).
+		Foreground(CurrentTheme.StatusFg).
 		Padding(0, 2).
 		Width(m.width).
 		Render(help)
-
 	// Compose
+	title := lipgloss.PlaceHorizontal(m.width, lipgloss.Center, "EXEC ECS")
 	return title + "\n" + mainBox + "\n" + status
 }
 
@@ -397,25 +396,75 @@ func (m menuModel) menuViewOnly() string {
 	}
 	var s strings.Builder
 	// Title (inside main area)
-	s.WriteString(titleStyle.Render(m.label))
+	s.WriteString(CurrentTheme.TitleStyle.Render(m.label))
+	s.WriteString("\n\n") // Add a newline after the label/title
 	// Filter input
 	if m.filterMode {
-		s.WriteString(filterStyle.Render("Filter: " + m.textInput.View()))
+		s.WriteString(CurrentTheme.FilterStyle.Render("Filter: " + m.textInput.View()))
 	}
-	// Items with alternating backgrounds
+	// Items with per-theme effects
 	start := m.page * itemsPerPage
 	end := min(start+itemsPerPage, len(m.filteredItems))
-	s.WriteString("\n")
+	// --- Pac-Man Theme ---
+	if CurrentTheme.Name == "Pac-Man" {
+		ghosts := []string{"👻", "👾", "👻", "👾"}
+		mazeBorder := lipgloss.NewStyle().Foreground(lipgloss.Color("#fff200")).Render("╔══════════════════════════════════╗")
+		mazeBottom := lipgloss.NewStyle().Foreground(lipgloss.Color("#fff200")).Render("╚══════════════════════════════════╝")
+		s.WriteString(mazeBorder + "\n")
+		for i := start; i < end; i++ {
+			item := m.filteredItems[i]
+			icon := ghosts[i%len(ghosts)]
+			dots := ""
+			for d := 0; d < 8; d++ {
+				dots += "·"
+			}
+			if i-start == m.cursor {
+				s.WriteString(CurrentTheme.SelectedItem.Render("🟡" + dots + " " + item))
+			} else {
+				s.WriteString(CurrentTheme.ItemStyle.Render(icon + dots + " " + item))
+			}
+			s.WriteString("\n")
+		}
+		s.WriteString(mazeBottom + "\n")
+		return s.String()
+	}
+	// --- Matrix Theme ---
+	if CurrentTheme.Name == "Matrix" {
+		codeRainTop := lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff41")).Render("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓")
+		codeRainBottom := lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff41")).Render("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛")
+		s.WriteString(codeRainTop + "\n")
+		for i := start; i < end; i++ {
+			item := m.filteredItems[i]
+			code := "01"
+			if i%2 == 0 {
+				code = "10"
+			}
+			if i-start == m.cursor {
+				s.WriteString(CurrentTheme.SelectedItem.Render("▣ " + item + " " + code))
+			} else {
+				s.WriteString(CurrentTheme.ItemStyle.Render("░ " + item + " " + code))
+			}
+			s.WriteString("\n")
+		}
+		s.WriteString(codeRainBottom + "\n")
+		// Add a code rain border effect (simple)
+		s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff41")).Render("  ᚠᚮᛚᛚᚮᚡ Þᛂ ᚡᛡᛁᛐᛂ ᚱᛆᛒᛒᛁᛐ  "))
+		return s.String()
+	}
+	// --- Default/Other Themes ---
 	for i := start; i < end; i++ {
 		item := m.filteredItems[i]
-		style := itemStyle
+		style := CurrentTheme.ItemStyle
 		if i%2 == 1 {
-			style = itemStyleAlt
+			style = CurrentTheme.ItemStyleAlt
 		}
+		icon := CurrentTheme.UnselectedIcon
 		if i-start == m.cursor {
-			s.WriteString(selectedItemStyle.Render("▶ " + item))
+			icon = CurrentTheme.SelectionIcon
+			// Add right padding for selected
+			s.WriteString(CurrentTheme.SelectedItem.Render(icon + " " + item + strings.Repeat(" ", CurrentTheme.SelectedPaddingRight)))
 		} else {
-			s.WriteString(style.Render(item))
+			s.WriteString(style.Render(icon + " " + item))
 		}
 		s.WriteString("\n")
 	}
@@ -424,20 +473,24 @@ func (m menuModel) menuViewOnly() string {
 		s.WriteString(fmt.Sprintf("\nPage %d/%d", m.page+1, (len(m.filteredItems)-1)/itemsPerPage+1))
 	}
 	if m.historyMode {
-		s.WriteString("\nTo go back press esc key")
+		s.WriteString(CurrentTheme.HelpStyle.Render("\nTo go back press esc key"))
 	}
 	return s.String()
 }
 
 func (m menuModel) menuHelpOnly() string {
+	defaultShortcuts := "↑↓ Move • Enter Select • / Filter • q Quit • ctrl+b Back • ctrl+h History • ctrl+t Theme"
+	if m.filterMode {
+		return "Esc: Exit Filter • Enter Apply Filter"
+	}
 	if m.historyMode {
 		return "To go back press esc key"
 	}
-	help := "↑↓ Move • Enter Select • / Filter • q Quit • ctrl+b Back • ctrl+h History"
-	if m.filterMode {
-		help = "Esc: Exit Filter • Enter Apply Filter"
+	custom := CurrentTheme.HelpHint
+	if custom != "" {
+		return custom + "  " + defaultShortcuts
 	}
-	return help
+	return defaultShortcuts
 }
 
 // Update bubbleteaSelect to use ideModel
@@ -538,6 +591,12 @@ func min(a, b int) int {
 /* -------------------------------------------------------------------------
    4. The rest of your AWS-related methods
    ------------------------------------------------------------------------- */
+
+func init() {
+	if name := LoadThemeSelection(); name != "" {
+		SetThemeByName(name)
+	}
+}
 
 func (c *Cli) CheckSSOSession(ctx context.Context, client *sts.Client, profile string) error {
 	_, err := client.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
