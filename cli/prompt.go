@@ -435,14 +435,11 @@ func (m menuModel) menuViewOnly() string {
 		s.WriteString(codeRainTop + "\n")
 		for i := start; i < end; i++ {
 			item := m.filteredItems[i]
-			code := "01"
-			if i%2 == 0 {
-				code = "10"
-			}
+
 			if i-start == m.cursor {
-				s.WriteString(CurrentTheme.SelectedItem.Render("▣ " + item + " " + code))
+				s.WriteString(CurrentTheme.SelectedItem.Render("▣ " + item + " "))
 			} else {
-				s.WriteString(CurrentTheme.ItemStyle.Render("░ " + item + " " + code))
+				s.WriteString(CurrentTheme.ItemStyle.Render("░ " + item + " "))
 			}
 			s.WriteString("\n")
 		}
