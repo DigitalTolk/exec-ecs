@@ -28,28 +28,57 @@ const (
 const clearHistoryOption = "🗑️  Clear History"
 
 var (
+	// Pastel color palette with dark background
+	pastelBlue    = lipgloss.Color("#A7C7E7")
+	pastelGreen   = lipgloss.Color("#B5EAD7")
+	pastelPink    = lipgloss.Color("#FFDAC1")
+	pastelYellow  = lipgloss.Color("#FFF5BA")
+	pastelPurple  = lipgloss.Color("#C7CEEA")
+	pastelGray    = lipgloss.Color("#232946") // dark background
+	pastelGrayAlt = lipgloss.Color("#2d3250") // alternate row
+	pastelText    = lipgloss.Color("#eaeaea")
+	pastelAccent  = lipgloss.Color("#ffd6e0") // for selected border/accent
+
 	// Styling
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("205")).
-			MarginBottom(1)
+			Foreground(pastelText).
+			Background(pastelBlue).
+			Padding(0, 1).
+			MarginBottom(1).
+			Border(lipgloss.NormalBorder(), true).
+			BorderForeground(pastelBlue)
 
 	itemStyle = lipgloss.NewStyle().
-			PaddingLeft(4)
+			PaddingLeft(2).
+			Foreground(pastelText).
+			Background(pastelGray)
+
+	itemStyleAlt = lipgloss.NewStyle().
+			PaddingLeft(2).
+			Foreground(pastelText).
+			Background(pastelGrayAlt)
 
 	selectedItemStyle = lipgloss.NewStyle().
 				PaddingLeft(2).
-				Foreground(lipgloss.Color("205")).
-				Bold(true)
+				Foreground(pastelGray).
+				Background(pastelAccent).
+				Bold(true).
+				Border(lipgloss.DoubleBorder(), true).
+				BorderForeground(pastelAccent)
 
 	filterStyle = lipgloss.NewStyle().
-			PaddingLeft(4).
+			PaddingLeft(2).
 			MarginTop(1).
-			MarginBottom(1)
+			MarginBottom(1).
+			Foreground(pastelGray).
+			Background(pastelYellow)
 
 	helpStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241")).
-			MarginTop(1)
+			Foreground(pastelText).
+			Background(pastelPurple).
+			MarginTop(1).
+			Padding(0, 1)
 )
 
 type menuModel struct {
@@ -119,6 +148,15 @@ func (m *menuModel) filterItems(filter string) {
 	m.filteredItems = filtered
 	m.cursor = 0
 	m.page = 0
+}
+
+// Reset menuModel to initial state for current items
+func (m *menuModel) reset() {
+	m.filteredItems = m.items
+	m.cursor = 0
+	m.page = 0
+	m.filterMode = false
+	m.textInput.SetValue("")
 }
 
 func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -215,8 +253,20 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmd.Stdin = os.Stdin
 				_ = cmd.Run()
 			}
-			return m, nil
-
+			// Reset menu state after returning from history
+			m.reset()
+			return m, tea.ClearScreen
+		// Add ctrl+t for theme selection
+		case "ctrl+t":
+			themeNames := GetThemeNames()
+			selected, _, err := bubbleteaSelect("Select Theme", themeNames, CurrentTheme.Name, false)
+			if err == nil && selected != "" {
+				SetThemeByName(selected)
+				SaveThemeSelection(selected)
+			}
+			// Always reset and redraw, even if theme didn't change
+			m.reset()
+			return m, tea.ClearScreen
 		// Add ctrl+left for go back
 		case "ctrl+left":
 			m.goBackTriggered = true
@@ -248,11 +298,11 @@ func (m menuModel) View() string {
 	var s strings.Builder
 
 	// Title
-	s.WriteString(titleStyle.Render(m.label))
+	s.WriteString(CurrentTheme.TitleStyle.Render(m.label))
 
 	// Filter input
 	if m.filterMode {
-		s.WriteString(filterStyle.Render("Filter: " + m.textInput.View()))
+		s.WriteString(CurrentTheme.FilterStyle.Render("Filter: " + m.textInput.View()))
 	}
 
 	// Items
@@ -262,9 +312,9 @@ func (m menuModel) View() string {
 	for i := start; i < end; i++ {
 		item := m.filteredItems[i]
 		if i-start == m.cursor {
-			s.WriteString(selectedItemStyle.Render("➜ " + item))
+			s.WriteString(CurrentTheme.SelectedItem.Render("▶ " + item))
 		} else {
-			s.WriteString(itemStyle.Render(item))
+			s.WriteString(CurrentTheme.ItemStyle.Render(item))
 		}
 		s.WriteString("\n")
 	}
@@ -277,7 +327,7 @@ func (m menuModel) View() string {
 	// Help
 	if m.historyMode {
 		help := "\nTo go back press esc key"
-		s.WriteString(helpStyle.Render(help))
+		s.WriteString(CurrentTheme.HelpStyle.Render(help))
 		return s.String()
 	}
 
@@ -286,31 +336,181 @@ func (m menuModel) View() string {
 	if m.filterMode {
 		help = "\nEsc: Exit Filter • Enter Apply Filter"
 	}
-	s.WriteString(helpStyle.Render(help))
+	s.WriteString(CurrentTheme.HelpStyle.Render(help))
 
 	return s.String()
 }
 
+// IDE-style model for full-terminal UI
+type ideModel struct {
+	menu   menuModel
+	width  int
+	height int
+}
+
+func (m ideModel) Init() tea.Cmd {
+	return m.menu.Init()
+}
+
+func (m ideModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.menu.viewport.Width = msg.Width - 4
+		m.menu.viewport.Height = msg.Height - 6
+		return m, nil
+	}
+	updated, cmd := m.menu.Update(msg)
+	m.menu = updated.(menuModel)
+	return m, cmd
+}
+
+func (m ideModel) View() string {
+	// Main area (menu) with border title
+	mainBox := lipgloss.NewStyle().
+		Border(CurrentTheme.BorderStyle, true).
+		BorderForeground(CurrentTheme.MainBorder).
+		Background(CurrentTheme.MainBg).
+		Padding(1, 2).
+		Width(m.width - 2).
+		Height(m.height - 4).
+		Render(m.menu.menuViewOnly())
+	// Status/help bar
+	help := m.menu.menuHelpOnly()
+	status := lipgloss.NewStyle().
+		Background(CurrentTheme.StatusBg).
+		Foreground(CurrentTheme.StatusFg).
+		Padding(0, 2).
+		Width(m.width).
+		Render(help)
+	// Compose
+	title := lipgloss.PlaceHorizontal(m.width, lipgloss.Center, "EXEC ECS")
+	return title + "\n" + mainBox + "\n" + status
+}
+
+// Split menuModel.View into menuViewOnly (main area) and menuHelpOnly (help bar)
+func (m menuModel) menuViewOnly() string {
+	if m.quitting {
+		return ""
+	}
+	var s strings.Builder
+	// Title (inside main area)
+	s.WriteString(CurrentTheme.TitleStyle.Render(m.label))
+	s.WriteString("\n\n") // Add a newline after the label/title
+	// Filter input
+	if m.filterMode {
+		s.WriteString(CurrentTheme.FilterStyle.Render("Filter: " + m.textInput.View()))
+	}
+	// Items with per-theme effects
+	start := m.page * itemsPerPage
+	end := min(start+itemsPerPage, len(m.filteredItems))
+	// --- Pac-Man Theme ---
+	if CurrentTheme.Name == "Pac-Man" {
+		ghosts := []string{"👻", "👾", "👻", "👾"}
+		mazeBorder := lipgloss.NewStyle().Foreground(lipgloss.Color("#fff200")).Render("╔══════════════════════════════════╗")
+		mazeBottom := lipgloss.NewStyle().Foreground(lipgloss.Color("#fff200")).Render("╚══════════════════════════════════╝")
+		s.WriteString(mazeBorder + "\n")
+		for i := start; i < end; i++ {
+			item := m.filteredItems[i]
+			icon := ghosts[i%len(ghosts)]
+			dots := ""
+			for d := 0; d < 8; d++ {
+				dots += "·"
+			}
+			if i-start == m.cursor {
+				s.WriteString(CurrentTheme.SelectedItem.Render("🟡" + dots + " " + item))
+			} else {
+				s.WriteString(CurrentTheme.ItemStyle.Render(icon + dots + " " + item))
+			}
+			s.WriteString("\n")
+		}
+		s.WriteString(mazeBottom + "\n")
+		return s.String()
+	}
+	// --- Matrix Theme ---
+	if CurrentTheme.Name == "Matrix" {
+		codeRainTop := lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff41")).Render("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓")
+		codeRainBottom := lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff41")).Render("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛")
+		s.WriteString(codeRainTop + "\n")
+		for i := start; i < end; i++ {
+			item := m.filteredItems[i]
+
+			if i-start == m.cursor {
+				s.WriteString(CurrentTheme.SelectedItem.Render("▣ " + item + " "))
+			} else {
+				s.WriteString(CurrentTheme.ItemStyle.Render("░ " + item + " "))
+			}
+			s.WriteString("\n")
+		}
+		s.WriteString(codeRainBottom + "\n")
+		// Add a code rain border effect (simple)
+		s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff41")).Render("  ᚠᚮᛚᛚᚮᚡ Þᛂ ᚡᛡᛁᛐᛂ ᚱᛆᛒᛒᛁᛐ  "))
+		return s.String()
+	}
+	// --- Default/Other Themes ---
+	for i := start; i < end; i++ {
+		item := m.filteredItems[i]
+		style := CurrentTheme.ItemStyle
+		if i%2 == 1 {
+			style = CurrentTheme.ItemStyleAlt
+		}
+		icon := CurrentTheme.UnselectedIcon
+		if i-start == m.cursor {
+			icon = CurrentTheme.SelectionIcon
+			// Add right padding for selected
+			s.WriteString(CurrentTheme.SelectedItem.Render(icon + " " + item + strings.Repeat(" ", CurrentTheme.SelectedPaddingRight)))
+		} else {
+			s.WriteString(style.Render(icon + " " + item))
+		}
+		s.WriteString("\n")
+	}
+	// Pagination info
+	if len(m.filteredItems) > itemsPerPage {
+		s.WriteString(fmt.Sprintf("\nPage %d/%d", m.page+1, (len(m.filteredItems)-1)/itemsPerPage+1))
+	}
+	if m.historyMode {
+		s.WriteString(CurrentTheme.HelpStyle.Render("\nTo go back press esc key"))
+	}
+	return s.String()
+}
+
+func (m menuModel) menuHelpOnly() string {
+	defaultShortcuts := "↑↓ Move • Enter Select • / Filter • q Quit • ctrl+b Back • ctrl+h History • ctrl+t Theme"
+	if m.filterMode {
+		return "Esc: Exit Filter • Enter Apply Filter"
+	}
+	if m.historyMode {
+		return "To go back press esc key"
+	}
+	custom := CurrentTheme.HelpHint
+	if custom != "" {
+		return custom + "  " + defaultShortcuts
+	}
+	return defaultShortcuts
+}
+
+// Update bubbleteaSelect to use ideModel
 func bubbleteaSelect(label string, items []string, defaultSelected string, showGoBack bool) (string, bool, error) {
 	m := initialModel(label, items, defaultSelected, showGoBack)
-	p := tea.NewProgram(m)
+	p := tea.NewProgram(ideModel{menu: m})
 	finalModel, err := p.Run()
 	if err != nil {
 		return "", false, err
 	}
-
-	mm, ok := finalModel.(menuModel)
+	im, ok := finalModel.(ideModel)
 	if !ok {
 		return "", false, fmt.Errorf("unexpected model type")
 	}
+	mm := im.menu
 	return mm.choice, mm.goBackTriggered, nil
 }
 
 // Prevent multiple history menus from stacking
 var historyMenuOpen bool
 
+// Update BubbleteaHistorySelect to use ideModel
 func BubbleteaHistorySelect(label string, items []string) (string, error) {
-	historyMenuOpen = true
 	// Format each history item as multiline for display
 	displayItems := make([]string, len(items))
 	for i, cmd := range items {
@@ -332,17 +532,18 @@ func BubbleteaHistorySelect(label string, items []string) (string, error) {
 	m := initialModel(label, allItems, "", false)
 	m.historyMode = true
 	for {
-		p := tea.NewProgram(m)
+		p := tea.NewProgram(ideModel{menu: m})
 		finalModel, err := p.Run()
 		if err != nil {
 			historyMenuOpen = false
 			return "", err
 		}
-		mm, ok := finalModel.(menuModel)
+		im, ok := finalModel.(ideModel)
 		if !ok {
 			historyMenuOpen = false
 			return "", fmt.Errorf("unexpected model type")
 		}
+		mm := im.menu
 		if mm.choice == clearHistoryOption {
 			// Clear the history file
 			historyFile := os.Getenv("HOME") + "/.ecs_cli_history"
@@ -387,6 +588,12 @@ func min(a, b int) int {
 /* -------------------------------------------------------------------------
    4. The rest of your AWS-related methods
    ------------------------------------------------------------------------- */
+
+func init() {
+	if name := LoadThemeSelection(); name != "" {
+		SetThemeByName(name)
+	}
+}
 
 func (c *Cli) CheckSSOSession(ctx context.Context, client *sts.Client, profile string) error {
 	_, err := client.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
