@@ -100,7 +100,7 @@ func main() {
 			state.Container = ""
 			step++
 		case stepRegion:
-			regions := []string{"eu-north-1", "eu-central-1", "eu-west-2"}
+			regions := []string{"eu-north-1", "eu-central-1", "eu-central-2", "eu-west-2"}
 			selected, goBack := cli.PromptWithDefault("Choose AWS region", state.Region, regions, true)
 			if goBack {
 				state.Region = ""
