@@ -100,7 +100,15 @@ func main() {
 			state.Container = ""
 			step++
 		case stepRegion:
-			regions := []string{"eu-north-1", "eu-central-1", "eu-west-2"}
+			regions := []string{
+				"us-east-1", "us-east-2", "us-west-1", "us-west-2",
+				"af-south-1",
+				"ap-east-1", "ap-south-1", "ap-south-2", "ap-southeast-1", "ap-southeast-2", "ap-southeast-3", "ap-southeast-4", "ap-northeast-1", "ap-northeast-2", "ap-northeast-3",
+				"ca-central-1",
+				"eu-central-1", "eu-central-2", "eu-west-1", "eu-west-2", "eu-west-3", "eu-north-1", "eu-south-1", "eu-south-2",
+				"me-south-1", "me-central-1",
+				"sa-east-1",
+			}
 			selected, goBack := cli.PromptWithDefault("Choose AWS region", state.Region, regions, true)
 			if goBack {
 				state.Region = ""
@@ -136,12 +144,18 @@ func main() {
 				sp.Stop()
 				clusters, clusterArns := cli.ListClusterNamesArns(ctx, ecsClient)
 				if len(clusters) == 0 {
-					fmt.Println("No ECS clusters found. Going back.")
-					state.ClusterArn = ""
-					state.Service = ""
-					state.TaskArn = ""
-					state.Container = ""
-					step--
+					// Stay on the cluster step and let the user decide to retry or go back
+					fmt.Println("No ECS clusters found in region:", cli.Region)
+					choice, goBack := cli.PromptSelect("No clusters found. What would you like to do?", []string{"Retry", "Back"}, "Retry", true)
+					if goBack || choice == "Back" {
+						state.ClusterArn = ""
+						state.Service = ""
+						state.TaskArn = ""
+						state.Container = ""
+						step--
+						continue
+					}
+					// Retry: remain on the same step
 					continue
 				}
 				selected, goBack := cli.PromptSelect("Choose ECS cluster", clusters, getKeyByValue(clusterArns, state.ClusterArn), true)

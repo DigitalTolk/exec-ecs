@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-const Version = "v1.1.8"
+const Version = "v1.1.9"
 
 func CheckAndInstallDependencies() {
 	dependencies := map[string]string{
