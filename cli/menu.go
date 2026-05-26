@@ -403,13 +403,10 @@ func (m menuModel) View() string {
 		}
 	}
 
-	s.WriteString(CurrentTheme.TitleStyle.Render(m.label))
-	if m.breadcrumb != "" {
-		s.WriteString("\n")
-		s.WriteString(CurrentTheme.HelpStyle.Render(m.breadcrumb))
-	}
+	s.WriteString(m.menuHeader())
 
 	if m.filterMode {
+		s.WriteString("\n")
 		s.WriteString(CurrentTheme.FilterStyle.Render("Filter: " + m.textInput.View()))
 	}
 
@@ -455,16 +452,11 @@ func (m menuModel) View() string {
 const maxLayoutHeight = 28
 
 func (m ideModel) View() string {
-	title := "EXEC ECS"
-	if m.width < 60 {
-		title = "ECS"
-	}
-
 	boxWidth := m.width - 2
 	if boxWidth < 20 {
 		boxWidth = 20
 	}
-	boxHeight := min(m.height-4, maxLayoutHeight)
+	boxHeight := min(m.height-3, maxLayoutHeight)
 	if boxHeight < 8 {
 		boxHeight = 8
 	}
@@ -485,8 +477,7 @@ func (m ideModel) View() string {
 		Padding(0, 2).
 		Width(m.width).
 		Render(help)
-	titleRendered := lipgloss.PlaceHorizontal(m.width, lipgloss.Center, title)
-	return titleRendered + "\n" + mainBox + "\n" + status
+	return mainBox + "\n" + status
 }
 
 func (m ideModel) Init() tea.Cmd {
@@ -536,14 +527,8 @@ func (m menuModel) menuViewOnly() string {
 	}
 	m.clampSelection()
 	var s strings.Builder
-	// Title (inside main area)
-	s.WriteString(CurrentTheme.TitleStyle.Render(m.label))
-	s.WriteString("\n")
-	if m.breadcrumb != "" {
-		s.WriteString(CurrentTheme.HelpStyle.Render(m.breadcrumb))
-		s.WriteString("\n")
-	}
-	s.WriteString("\n") // Add a newline after the label/breadcrumb
+	s.WriteString(m.menuHeader())
+	s.WriteString("\n\n")
 	if m.loading {
 		frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 		frame := frames[m.loadingFrame%len(frames)]
@@ -620,40 +605,122 @@ func (m menuModel) menuViewOnly() string {
 		s.WriteString(fmt.Sprintf("\nPage %d/%d", m.page+1, (len(m.filteredItems)-1)/m.itemsPerPage+1))
 	}
 	if m.historyMode {
-		s.WriteString(CurrentTheme.HelpStyle.Render("\nTo go back press esc key"))
+		s.WriteString(CurrentTheme.HelpStyle.Render("\nEsc Back"))
 	}
 	return s.String()
 }
 
+func (m menuModel) menuHeader() string {
+	width := m.contentWidth()
+	app := lipgloss.NewStyle().
+		Foreground(CurrentTheme.MainBorder).
+		Bold(true).
+		Render("exec-ecs")
+	title := lipgloss.NewStyle().
+		Foreground(CurrentTheme.TitleFg).
+		Bold(true).
+		Render(m.label)
+
+	var s strings.Builder
+	if width > 32 {
+		s.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, title, strings.Repeat(" ", max(1, width-lipgloss.Width(title)-lipgloss.Width(app))), app))
+	} else {
+		s.WriteString(title)
+	}
+
+	if m.breadcrumb != "" {
+		s.WriteString("\n")
+		s.WriteString(m.breadcrumbLine())
+	}
+	return s.String()
+}
+
+func (m menuModel) breadcrumbLine() string {
+	crumbs := breadcrumbSegments(m.breadcrumb)
+	if len(crumbs) == 0 {
+		return ""
+	}
+
+	crumbStyle := lipgloss.NewStyle().
+		Foreground(CurrentTheme.StatusFg).
+		Background(CurrentTheme.StatusBg).
+		Padding(0, 1)
+	sepStyle := lipgloss.NewStyle().
+		Foreground(CurrentTheme.MainBorder)
+
+	rendered := make([]string, 0, len(crumbs)*2-1)
+	for i, crumb := range crumbs {
+		if i > 0 {
+			rendered = append(rendered, sepStyle.Render("/"))
+		}
+		rendered = append(rendered, crumbStyle.Render(crumb))
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, rendered...)
+}
+
+func breadcrumbSegments(breadcrumb string) []string {
+	if strings.TrimSpace(breadcrumb) == "" {
+		return nil
+	}
+	raw := strings.Split(breadcrumb, " > ")
+	segments := make([]string, 0, len(raw))
+	for _, part := range raw {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		label, value, ok := strings.Cut(part, ":")
+		if !ok {
+			segments = append(segments, part)
+			continue
+		}
+		label = strings.TrimSpace(label)
+		value = strings.TrimSpace(value)
+		if value == "" {
+			segments = append(segments, label)
+			continue
+		}
+		segments = append(segments, label+" "+value)
+	}
+	return segments
+}
+
+func (m menuModel) contentWidth() int {
+	if m.width > 8 {
+		return m.width - 8
+	}
+	return 72
+}
+
 func (m menuModel) menuHelpOnly() string {
 	// Scale help text based on terminal width
-	defaultShortcuts := "↑↓ Move • Enter Select • / Filter • q Quit • esc/ctrl+b Back • ctrl+h History • ctrl+t Theme"
+	defaultShortcuts := "↑↓ Move  Enter Select  / Filter  q Quit  esc Back  ctrl+h History  ctrl+t Theme"
 	if !m.showGoBack {
-		defaultShortcuts = "↑↓ Move • Enter Select • / Filter • q Quit • ctrl+h History • ctrl+t Theme"
+		defaultShortcuts = "↑↓ Move  Enter Select  / Filter  q Quit  ctrl+h History  ctrl+t Theme"
 	}
 	if m.width < 80 {
-		defaultShortcuts = "↑↓ Move • Enter Select • / Filter • q Quit • esc/ctrl+b Back • ctrl+h History • ctrl+t Theme"
+		defaultShortcuts = "↑↓  Enter  /  q  esc Back  ctrl+h  ctrl+t"
 		if !m.showGoBack {
-			defaultShortcuts = "↑↓ Move • Enter Select • / Filter • q Quit • ctrl+h History • ctrl+t Theme"
+			defaultShortcuts = "↑↓  Enter  /  q  ctrl+h  ctrl+t"
 		}
 	} else if m.width > 120 {
-		defaultShortcuts = "↑↓ Move • Enter Select • / Filter • q Quit • esc/ctrl+b Back • ctrl+h History • ctrl+t Theme"
+		defaultShortcuts = "↑↓ Move  Enter Select  / Filter  q Quit  esc Back  ctrl+b Back  ctrl+h History  ctrl+t Theme"
 		if !m.showGoBack {
-			defaultShortcuts = "↑↓ Move • Enter Select • / Filter • q Quit • ctrl+h History • ctrl+t Theme"
+			defaultShortcuts = "↑↓ Move  Enter Select  / Filter  q Quit  ctrl+h History  ctrl+t Theme"
 		}
 	}
 
 	if m.filterMode {
-		return "Esc: Exit Filter • Enter Apply Filter"
+		return "Esc exits filter  Enter applies filter"
 	}
 	if m.loading {
 		if m.showGoBack {
-			return "Loading • esc/ctrl+b Back • q Quit"
+			return "Loading  esc Back  q Quit"
 		}
-		return "Loading • q Quit"
+		return "Loading  q Quit"
 	}
 	if m.historyMode {
-		return "To go back press esc key"
+		return "Esc Back"
 	}
 	custom := CurrentTheme.HelpHint
 	if custom != "" {

@@ -233,13 +233,42 @@ func TestMenuModelLoadItemsAutoSelectsSingleItem(t *testing.T) {
 }
 
 func TestMenuModelBreadcrumbRenders(t *testing.T) {
-	t.Parallel()
+	prev := CurrentTheme
+	CurrentTheme = SimpleCIDETheme
+	t.Cleanup(func() { CurrentTheme = prev })
+
 	m := initialModelWithBreadcrumb("Choose ECS service", []string{"api"}, "", true, "Profile: dt > Region: eu-north-1 > Cluster: prod")
 	m.itemsPerPage = 10
 
 	out := m.menuViewOnly()
-	if !strings.Contains(out, "Profile: dt") || !strings.Contains(out, "Cluster: prod") {
+	if !strings.Contains(out, "Profile dt") || !strings.Contains(out, "Cluster prod") {
 		t.Fatalf("breadcrumb missing from view: %q", out)
+	}
+}
+
+func TestIdeModelViewUsesSingleInDialogHeader(t *testing.T) {
+	prev := CurrentTheme
+	CurrentTheme = SimpleCIDETheme
+	t.Cleanup(func() { CurrentTheme = prev })
+
+	im := ideModel{
+		menu:   initialModelWithBreadcrumb("Choose ECS service", []string{"api"}, "", true, "Profile: dt > Region: eu-north-1"),
+		width:  100,
+		height: 30,
+	}
+	im.menu.width = im.width
+	im.menu.height = im.height
+	im.menu.itemsPerPage = 10
+
+	out := im.View()
+	if strings.HasPrefix(out, "EXEC ECS\n") {
+		t.Fatalf("outer title bar should not render: %q", out)
+	}
+	if !strings.Contains(out, "exec-ecs") || !strings.Contains(out, "Choose ECS service") {
+		t.Fatalf("in-dialog header missing: %q", out)
+	}
+	if !strings.Contains(out, "Profile dt") || !strings.Contains(out, "Region eu-north-1") {
+		t.Fatalf("path row missing: %q", out)
 	}
 }
 
