@@ -103,16 +103,12 @@ To uninstall `exec-ecs`, simply remove the binary:
     - **Linux**:
         - `exec-ecs_Linux_x86_64.tar.gz` (Linux 64-bit)
         - `exec-ecs_Linux_arm64.tar.gz` (Linux ARM64)
-        - `exec-ecs_Linux_armv6.tar.gz` (Linux ARMv6)
-        - `exec-ecs_Linux_i386.tar.gz` (Linux 32-bit)
     - **macOS**:
         - `exec-ecs_Darwin_x86_64.tar.gz` (macOS Intel)
         - `exec-ecs_Darwin_arm64.tar.gz` (macOS ARM)
     - **Windows**:
         - `exec-ecs_Windows_x86_64.zip` (Windows 64-bit)
         - `exec-ecs_Windows_arm64.zip` (Windows ARM64)
-        - `exec-ecs_Windows_armv6.zip` (Windows ARMv6)
-        - `exec-ecs_Windows_i386.zip` (Windows 32-bit)
 3. Extract the file:
     
     - For `.tar.gz` files:

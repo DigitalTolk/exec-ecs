@@ -92,12 +92,6 @@ case "$ARCH" in
     arm64|aarch64)
         ARCH="arm64"
         ;;
-    armv6l|armv7l)
-        ARCH="armv6"
-        ;;
-    i386)
-        ARCH="i386"
-        ;;
     *)
         error "Unsupported architecture: $ARCH"
         exit 1
