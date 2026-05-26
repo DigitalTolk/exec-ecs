@@ -3,36 +3,69 @@ package cli
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-const clearHistoryOption = "🗑️  Clear History"
+const (
+	clearHistoryOption    = "🗑️  Clear History"
+	historyDisplayMaxRune = 100
+	historyDisplayEllipsis = "…"
+)
 
 var historyMenuOpen bool
 
+// historyExtraOpts is appended to the default tea.Program options. Tests
+// override this to feed scripted input / capture rendered output.
+var historyExtraOpts []tea.ProgramOption
+
+// truncateForDisplay collapses internal whitespace and shortens a command to a
+// single line that fits within historyDisplayMaxRune runes. We deliberately
+// avoid embedding `\n` in the displayed string — the previous approach broke
+// the equality check used to map the chosen display back to the original
+// command, and made nested bubbletea pagination layouts unpredictable.
+func truncateForDisplay(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if utf8.RuneCountInString(s) <= historyDisplayMaxRune {
+		return s
+	}
+	runes := []rune(s)
+	cutoff := historyDisplayMaxRune - utf8.RuneCountInString(historyDisplayEllipsis)
+	if cutoff < 1 {
+		cutoff = 1
+	}
+	return string(runes[:cutoff]) + historyDisplayEllipsis
+}
+
+// BubbleteaHistorySelect shows the last-N history entries and returns the
+// command the user picked (in its original, untruncated form). The display
+// strings are kept distinct from the original commands via displayToOriginal
+// so we never have to round-trip through a possibly-mangled label.
 func BubbleteaHistorySelect(label string, items []string) (string, error) {
-	displayItems := make([]string, len(items))
-	for i, cmd := range items {
-		var formatted strings.Builder
-		count := 0
-		for _, r := range cmd {
-			formatted.WriteRune(r)
-			count++
-			if count >= 80 && r == ' ' {
-				formatted.WriteRune('\n')
-				count = 0
+	displayItems := make([]string, 0, len(items))
+	displayToOriginal := make(map[string]string, len(items))
+	for _, cmd := range items {
+		d := truncateForDisplay(cmd)
+		// Ensure each display string is unique so the map lookup is exact.
+		// Duplicate raw commands are dropped upstream by GetLastUniqueHistory.
+		for _, existing := range displayItems {
+			if existing == d {
+				d = d + " "
+				break
 			}
 		}
-		displayItems[i] = formatted.String()
+		displayItems = append(displayItems, d)
+		displayToOriginal[d] = cmd
 	}
 	allItems := append(displayItems, clearHistoryOption)
 	m := initialModel(label, allItems, "", false)
 	m.historyMode = true
+
 	for {
-		p := tea.NewProgram(ideModel{menu: m}, tea.WithMouseAllMotion())
+		opts := append([]tea.ProgramOption{tea.WithMouseAllMotion(), tea.WithAltScreen()}, historyExtraOpts...)
+		p := tea.NewProgram(ideModel{menu: m}, opts...)
 		finalModel, err := p.Run()
 		if err != nil {
 			historyMenuOpen = false
@@ -45,32 +78,24 @@ func BubbleteaHistorySelect(label string, items []string) (string, error) {
 		}
 		mm := im.menu
 		if mm.choice == clearHistoryOption {
-			historyFile := filepath.Join(homeDir(), ".ecs_cli_history")
 			_ = os.Remove(historyFile)
 			fmt.Println("History cleared.")
+			displayItems = nil
+			displayToOriginal = map[string]string{}
 			allItems = []string{clearHistoryOption}
 			m = initialModel(label, allItems, "", false)
 			m.historyMode = true
 			continue
 		}
-		// Mouse click support: if a mouse click occurred, print the command for copying
-		if mm.choice != "" && mm.choice != clearHistoryOption && mm.quitting && mmWasMouseClick(mm) {
-			// Map the selected display string back to the original command
-			for i, disp := range displayItems {
-				if mm.choice == disp {
-					fmt.Println("\nCopied to clipboard (select and copy):\n" + items[i])
-					historyMenuOpen = false
-					return "", nil
-				}
-			}
-		}
-		for i, disp := range displayItems {
-			if mm.choice == disp {
-				historyMenuOpen = false
-				return items[i], nil
-			}
-		}
 		historyMenuOpen = false
+		// Map the selected display string back to the original command.
+		if original, ok := displayToOriginal[mm.choice]; ok {
+			if mm.quitting && mmWasMouseClick(mm) {
+				fmt.Println("\nCopied to clipboard (select and copy):\n" + original)
+				return "", nil
+			}
+			return original, nil
+		}
 		return mm.choice, nil
 	}
 }

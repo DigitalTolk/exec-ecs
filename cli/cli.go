@@ -9,8 +9,13 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
+	tea "github.com/charmbracelet/bubbletea"
 	"gopkg.in/ini.v1"
 )
+
+// teaProgramOption is the bubbletea program-option type, aliased so callers
+// of PromptSelect's test hook don't have to import tea directly.
+type teaProgramOption = tea.ProgramOption
 
 type Cli struct {
 	Interactive bool
@@ -178,12 +183,16 @@ func arnMap(arns []string) map[string]string {
 	return out
 }
 
+// promptExtraOpts is appended to PromptSelect's bubbletea program. Tests use
+// it to feed scripted input / capture rendered output.
+var promptExtraOpts []teaProgramOption
+
 // PromptSelect runs the interactive picker. An empty selection means the
 // user quit with q/ctrl+c/esc and is treated as a clean exit (caller's
 // responsibility to decide what to do); a non-nil error is fatal because it
 // means the bubbletea program itself failed to run.
 func (c *Cli) PromptSelect(label string, items []string, defaultSelected string, showGoBack bool) (string, bool) {
-	selectedItem, goBack, err := bubbleteaSelect(label, items, defaultSelected, showGoBack)
+	selectedItem, goBack, err := bubbleteaSelect(label, items, defaultSelected, showGoBack, promptExtraOpts...)
 	if err != nil {
 		log.Fatalf("Selection prompt failed: %v", err)
 	}

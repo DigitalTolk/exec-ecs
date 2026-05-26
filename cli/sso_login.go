@@ -109,6 +109,24 @@ func writeCachedSSOToken(path string, t *ssoTokenCache) error {
 // browserOpener is overridable in tests so we don't actually launch a browser.
 var browserOpener = openBrowser
 
+// ssoOIDCClient is the superset of the OIDC SDK methods we drive. Exposed via
+// a constructor variable so tests can substitute a stub.
+type ssoOIDCClient interface {
+	ssoOIDCRegisterer
+	StartDeviceAuthorization(ctx context.Context, params *ssooidc.StartDeviceAuthorizationInput, optFns ...func(*ssooidc.Options)) (*ssooidc.StartDeviceAuthorizationOutput, error)
+	CreateToken(ctx context.Context, params *ssooidc.CreateTokenInput, optFns ...func(*ssooidc.Options)) (*ssooidc.CreateTokenOutput, error)
+}
+
+// newOIDCClient builds an OIDC client from the loaded AWS config. Overridable
+// in tests.
+var newOIDCClient = func(ctx context.Context, region string) (ssoOIDCClient, error) {
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	if err != nil {
+		return nil, err
+	}
+	return ssooidc.NewFromConfig(cfg), nil
+}
+
 // pollWait blocks for d while honouring context cancellation. Overridable in
 // tests so the polling loop completes quickly.
 var pollWait = func(ctx context.Context, d time.Duration) error {
@@ -134,11 +152,10 @@ func (c *Cli) PerformNativeSSOLogin(ctx context.Context, sso *SSOSessionConfig) 
 		return errors.New("incomplete sso-session config")
 	}
 
-	awsCfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(sso.Region))
+	oidc, err := newOIDCClient(ctx, sso.Region)
 	if err != nil {
 		return fmt.Errorf("load aws config: %w", err)
 	}
-	oidc := ssooidc.NewFromConfig(awsCfg)
 
 	cachePath := ssoCachePath(sso.Name)
 	clientID, clientSecret, regExpiresAt, err := ensureSSOClientRegistration(ctx, oidc, sso, loadCachedSSOToken(cachePath))

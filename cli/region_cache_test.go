@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
 )
 
 func setRegionCacheFile(t *testing.T) string {
@@ -143,11 +145,30 @@ func TestDiscoverRegionsEmpty(t *testing.T) {
 
 func TestRegionCachePathDefault(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
+	prev := configDirOverride
+	configDirOverride = tmp
+	t.Cleanup(func() { configDirOverride = prev })
 	t.Setenv("EXEC_ECS_REGION_CACHE_PATH", "")
-	want := filepath.Join(tmp, ".exec-ecs-region-cache.json")
+	want := filepath.Join(tmp, "region-cache.json")
 	if got := regionCachePath(); got != want {
 		t.Fatalf("default path = %q want %q", got, want)
+	}
+}
+
+func TestDefaultRegionProberFailsWithoutCreds(t *testing.T) {
+	// Force LoadDefaultConfig to choose a region that doesn't resolve, with
+	// a non-existent profile, so the function takes its error branch.
+	prev := baseAWSConfigForProbe
+	baseAWSConfigForProbe = func(_ context.Context, _ string) (aws.Config, error) {
+		return aws.Config{}, errors.New("no creds")
+	}
+	t.Cleanup(func() {
+		baseAWSConfigForProbe = prev
+		probeBaseConfig = &probeConfigCache{} // reset shared state
+	})
+
+	if _, err := defaultRegionProber(context.Background(), "no-such-profile", "us-east-1"); err == nil {
+		t.Fatal("expected error when base config load fails")
 	}
 }
 
@@ -157,3 +178,41 @@ func TestDefaultRegionsNonEmpty(t *testing.T) {
 		t.Fatal("DefaultRegions empty")
 	}
 }
+
+func TestProbeConfigCacheGetSet(t *testing.T) {
+	c := &probeConfigCache{}
+	if _, ok := c.get("any"); ok {
+		t.Fatal("empty cache should miss")
+	}
+
+	prev := baseAWSConfigForProbe
+	t.Cleanup(func() { baseAWSConfigForProbe = prev })
+
+	calls := 0
+	baseAWSConfigForProbe = func(_ context.Context, _ string) (aws.Config, error) {
+		calls++
+		return aws.Config{}, nil
+	}
+
+	c.set(context.Background(), "p1")
+	if calls != 1 {
+		t.Fatalf("expected 1 call, got %d", calls)
+	}
+	// Same profile → cached.
+	c.set(context.Background(), "p1")
+	if calls != 1 {
+		t.Fatalf("expected still 1 call after re-set, got %d", calls)
+	}
+	if _, ok := c.get("p1"); !ok {
+		t.Fatal("get(p1) miss after set")
+	}
+	if _, ok := c.get("p2"); ok {
+		t.Fatal("get(p2) hit but never set")
+	}
+	// Different profile → reload.
+	c.set(context.Background(), "p2")
+	if calls != 2 {
+		t.Fatalf("expected 2 calls after profile switch, got %d", calls)
+	}
+}
+

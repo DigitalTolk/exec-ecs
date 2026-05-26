@@ -42,14 +42,16 @@ jobs:
           go test -race -covermode=atomic -coverprofile=coverage.out ./...
           go tool cover -func=coverage.out
 
-      # The cli package owns the business logic. main.go and installer.go are
-      # mostly thin wrappers around exec.Command / interactive TTY code that we
-      # validate manually, so we enforce a high bar on cli specifically and a
-      # lower bar on the overall total.
+      # The cli package owns the business logic and is unit-testable. main.go
+      # is a thin entry point and installer.go is mostly OS-specific install
+      # scripts; both are integration-tested manually. We therefore gate at
+      # 80% on cli (the real test surface) and a lower 55% on the overall
+      # total to keep regressions visible without forcing pointless tests
+      # against PTY/install code that has no useful unit-test path.
       - name: Enforce coverage thresholds
         env:
-          MIN_CLI_COVERAGE: "50"
-          MIN_TOTAL_COVERAGE: "30"
+          MIN_CLI_COVERAGE: "80"
+          MIN_TOTAL_COVERAGE: "55"
         run: |
           cli=$(go tool cover -func=coverage.out | awk '$1 ~ /^ecs-tool\/cli\// { sum += $NF + 0; n += 1 } END { if (n) printf("%.1f", sum/n); else print "0" }')
           total=$(go tool cover -func=coverage.out | awk '/^total:/ { gsub("%",""); print $3 }')

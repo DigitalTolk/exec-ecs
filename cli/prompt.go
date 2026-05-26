@@ -13,7 +13,10 @@ func (c *Cli) PromptWithDefault(label, defaultValue string, items []string, show
 	return c.PromptSelect(label, allItems, defaultValue, showGoBack)
 }
 
-func bubbleteaSelect(label string, items []string, defaultSelected string, showGoBack bool) (string, bool, error) {
+// bubbleteaSelect runs the picker. Extra tea.ProgramOption values are appended
+// to the default `tea.WithAltScreen` so tests can inject a scripted input
+// stream / capture stdout via tea.WithInput / tea.WithOutput.
+func bubbleteaSelect(label string, items []string, defaultSelected string, showGoBack bool, extraOpts ...tea.ProgramOption) (string, bool, error) {
 	m := initialModel(label, items, defaultSelected, showGoBack)
 
 	if strings.Contains(label, "Theme") {
@@ -30,7 +33,13 @@ func bubbleteaSelect(label string, items []string, defaultSelected string, showG
 		}
 	}
 
-	p := tea.NewProgram(ideModel{menu: m})
+	// WithAltScreen routes all output to the terminal's alternate buffer so
+	// the menu redraws don't accumulate in scroll-back. Without this the
+	// previous menu's output stays in the user's terminal history and a
+	// re-render (e.g. after a region-discovery spinner) looks like a
+	// duplicated window.
+	opts := append([]tea.ProgramOption{tea.WithAltScreen()}, extraOpts...)
+	p := tea.NewProgram(ideModel{menu: m}, opts...)
 	finalModel, err := p.Run()
 	if err != nil {
 		return "", false, err
@@ -52,6 +61,9 @@ func bubbleteaSelect(label string, items []string, defaultSelected string, showG
 }
 
 func init() {
+	// Move any pre-existing ~/.ecs_cli_* / ~/.exec-ecs-* files into the
+	// config dir on first run after upgrade. Failures are non-fatal.
+	migrateLegacyPaths()
 	if name := LoadThemeSelection(); name != "" {
 		SetThemeByName(name)
 	}

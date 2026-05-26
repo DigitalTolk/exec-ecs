@@ -5,22 +5,14 @@ import (
 	"ecs-tool/cli"
 	"ecs-tool/installer"
 	"fmt"
-	"io"
-	"log"
 	"os"
 	"os/exec"
-	"os/signal"
-	"strings"
-	"syscall"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/briandowns/spinner"
-	"github.com/creack/pty"
-	"golang.org/x/term"
 )
 
 type stepState struct {
@@ -63,25 +55,58 @@ func main() {
 		Container:  c.Container,
 	}
 
-	if err := runInteractiveSelection(ctx, c, &state); err != nil {
-		c.LogUserFriendlyError("Selection failed", err, "See error details above.", "", 0)
-	}
-
-	executeECSCommand(c, state.ClusterArn, state.TaskArn, state.Container)
-}
-
-func runInteractiveSelection(ctx context.Context, c *cli.Cli, state *stepState) error {
-	step := 0
+	// Outer loop: after each exec session ends, drop the user back into the
+	// picker (rewinding to the cluster step) so they can run another command
+	// without restarting the binary. The interactive picker itself handles
+	// ctrl+b back-navigation and ctrl+c clean exit.
 	awsCfg := aws.Config{}
 	awsCfgLoaded := false
-	ssoEnsured := false
+	for {
+		var err error
+		awsCfg, awsCfgLoaded, err = runInteractiveSelection(ctx, c, &state, awsCfg, awsCfgLoaded)
+		if err != nil {
+			c.LogUserFriendlyError("Selection failed", err, "See error details above.", "", 0)
+		}
+
+		exitCode, execErr := cli.ExecECS(ctx, c, awsCfg, cli.ExecOptions{
+			Region:     state.Region,
+			ClusterArn: state.ClusterArn,
+			TaskArn:    state.TaskArn,
+			Container:  state.Container,
+			Command:    c.Command,
+		})
+		if execErr != nil {
+			fmt.Fprintln(os.Stderr, "exec-ecs:", execErr)
+		}
+		if exitCode != 0 {
+			fmt.Fprintf(os.Stderr, "session exited with code %d\n", exitCode)
+		}
+
+		// Re-enter the picker at the cluster step (cluster/service/task/
+		// container get cleared by resetFrom). Profile, region, and the
+		// already-loaded AWS config are preserved so the loop is fast.
+		resetFrom(&state, stepCluster)
+	}
+}
+
+func runInteractiveSelection(ctx context.Context, c *cli.Cli, state *stepState, awsCfg aws.Config, awsCfgLoaded bool) (aws.Config, bool, error) {
+	step := stepProfile
+	// If we're re-entering with state already populated from a previous
+	// session, skip forward to the first empty field.
+	if state.Profile != "" {
+		step = stepRegion
+		if state.Region != "" {
+			step = stepCluster
+		}
+	}
+	ssoEnsured := awsCfgLoaded
 
 	for step < finalStep {
 		switch step {
 		case stepProfile:
 			profiles := c.SelectProfileList()
 			if len(profiles) == 0 {
-				return fmt.Errorf("no AWS profiles found")
+				return awsCfg, awsCfgLoaded, fmt.Errorf("no AWS profiles found")
 			}
 			selected, goBack := c.PromptSelect("Choose AWS profile", profiles, state.Profile, step > stepProfile)
 			if goBack && step > stepProfile {
@@ -103,7 +128,7 @@ func runInteractiveSelection(ctx context.Context, c *cli.Cli, state *stepState) 
 		case stepRegion:
 			if !ssoEnsured {
 				if err := ensureSSOLogin(ctx, c); err != nil {
-					return err
+					return awsCfg, awsCfgLoaded, err
 				}
 				ssoEnsured = true
 			}
@@ -147,12 +172,12 @@ func runInteractiveSelection(ctx context.Context, c *cli.Cli, state *stepState) 
 			if !awsCfgLoaded {
 				cfg, err := loadAWSConfig(ctx, c)
 				if err != nil {
-					return err
+					return awsCfg, awsCfgLoaded, err
 				}
 				awsCfg = cfg
 				if !ssoEnsured {
 					if err := validateSSOSession(ctx, c, awsCfg); err != nil {
-						return err
+						return awsCfg, awsCfgLoaded, err
 					}
 					ssoEnsured = true
 				}
@@ -163,31 +188,31 @@ func runInteractiveSelection(ctx context.Context, c *cli.Cli, state *stepState) 
 			case stepCluster:
 				next, err := pickCluster(ctx, c, awsCfg, state)
 				if err != nil {
-					return err
+					return awsCfg, awsCfgLoaded, err
 				}
 				step += next
 			case stepService:
 				next, err := pickService(ctx, c, awsCfg, state)
 				if err != nil {
-					return err
+					return awsCfg, awsCfgLoaded, err
 				}
 				step += next
 			case stepTask:
 				next, err := pickTask(ctx, c, awsCfg, state)
 				if err != nil {
-					return err
+					return awsCfg, awsCfgLoaded, err
 				}
 				step += next
 			case stepContainer:
 				next, err := pickContainer(ctx, c, awsCfg, state)
 				if err != nil {
-					return err
+					return awsCfg, awsCfgLoaded, err
 				}
 				step += next
 			}
 		}
 	}
-	return nil
+	return awsCfg, awsCfgLoaded, nil
 }
 
 func resetFrom(state *stepState, from int) {
@@ -208,122 +233,58 @@ func resetFrom(state *stepState, from int) {
 	}
 }
 
+// pickCluster / pickService / pickTask / pickContainer are thin wrappers that
+// add the spinner UX around the testable cli.Pick* helpers (which carry the
+// real branching logic) and mirror the per-step state into both the state
+// struct and the persistent Cli flags.
 func pickCluster(ctx context.Context, c *cli.Cli, awsCfg aws.Config, state *stepState) (int, error) {
 	sp := createSpinner("Connecting to ECS...")
-	ecsClient := ecs.NewFromConfig(awsCfg)
-	c.LogAWSCommand("ecs", "list-clusters", "--profile", c.Profile, "--region", c.Region)
-	clusters, clusterArns, err := c.ListClusterNamesArns(ctx, ecsClient)
+	client := cli.NewECSClient(awsCfg, c.Region)
+	out, action, err := cli.PickCluster(ctx, c, c.CliSelector(), client, toCliState(*state))
 	sp.Stop()
-	if err != nil {
-		fmt.Println("Failed to list ECS clusters:", err)
-		choice, goBack := c.PromptSelect("Cluster lookup failed. What now?",
-			[]string{"Retry", "Back"}, "Retry", true)
-		if goBack || choice == "Back" {
-			resetFrom(state, stepCluster)
-			return -1, nil
-		}
-		return 0, nil
-	}
-	if len(clusters) == 0 {
-		fmt.Println("No ECS clusters found in region:", c.Region)
-		choice, goBack := c.PromptSelect("No clusters found. What now?",
-			[]string{"Retry", "Back"}, "Retry", true)
-		if goBack || choice == "Back" {
-			resetFrom(state, stepCluster)
-			cli.ClearRegionCache(c.Profile)
-			return -1, nil
-		}
-		return 0, nil
-	}
-	selected, goBack := c.PromptSelect("Choose ECS cluster", clusters, getKeyByValue(clusterArns, state.ClusterArn), true)
-	if goBack {
-		resetFrom(state, stepCluster)
-		return -1, nil
-	}
-	state.ClusterArn = clusterArns[selected]
-	c.ClusterArn = state.ClusterArn
-	resetFrom(state, stepService)
-	return 1, nil
+	*state = fromCliState(out)
+	return int(action), err
 }
 
 func pickService(ctx context.Context, c *cli.Cli, awsCfg aws.Config, state *stepState) (int, error) {
 	sp := createSpinner("Fetching ECS services...")
-	ecsClient := ecs.NewFromConfig(awsCfg)
-	c.LogAWSCommand("ecs", "list-services", "--cluster", state.ClusterArn, "--profile", c.Profile, "--region", c.Region)
-	services, serviceArns, err := c.ListServiceNamesArns(ctx, ecsClient, state.ClusterArn)
+	client := cli.NewECSClient(awsCfg, c.Region)
+	out, action, err := cli.PickService(ctx, c, c.CliSelector(), client, toCliState(*state))
 	sp.Stop()
-	if err != nil {
-		fmt.Println("Failed to list ECS services:", err)
-		resetFrom(state, stepService)
-		return -1, nil
-	}
-	if len(services) == 0 {
-		fmt.Println("No ECS services found. Going back.")
-		resetFrom(state, stepService)
-		return -1, nil
-	}
-	selected, goBack := c.PromptSelect("Choose ECS service", services, getKeyByValue(serviceArns, state.Service), true)
-	if goBack {
-		resetFrom(state, stepService)
-		return -1, nil
-	}
-	state.Service = serviceArns[selected]
-	c.Service = state.Service
-	resetFrom(state, stepTask)
-	return 1, nil
+	*state = fromCliState(out)
+	return int(action), err
 }
 
 func pickTask(ctx context.Context, c *cli.Cli, awsCfg aws.Config, state *stepState) (int, error) {
 	sp := createSpinner("Fetching ECS tasks...")
-	ecsClient := ecs.NewFromConfig(awsCfg)
-	c.LogAWSCommand("ecs", "list-tasks", "--cluster", state.ClusterArn, "--service-name", state.Service, "--profile", c.Profile, "--region", c.Region)
-	tasks, taskArns, err := c.ListTaskNamesArns(ctx, ecsClient, state.ClusterArn, state.Service)
+	client := cli.NewECSClient(awsCfg, c.Region)
+	out, action, err := cli.PickTask(ctx, c, c.CliSelector(), client, toCliState(*state))
 	sp.Stop()
-	if err != nil {
-		fmt.Println("Failed to list ECS tasks:", err)
-		resetFrom(state, stepTask)
-		return -1, nil
-	}
-	if len(tasks) == 0 {
-		fmt.Println("No ECS tasks found. Going back.")
-		resetFrom(state, stepTask)
-		return -1, nil
-	}
-	selected, goBack := c.PromptSelect("Choose ECS task", tasks, getKeyByValue(taskArns, state.TaskArn), true)
-	if goBack {
-		resetFrom(state, stepTask)
-		return -1, nil
-	}
-	state.TaskArn = taskArns[selected]
-	c.TaskArn = state.TaskArn
-	resetFrom(state, stepContainer)
-	return 1, nil
+	*state = fromCliState(out)
+	return int(action), err
 }
 
 func pickContainer(ctx context.Context, c *cli.Cli, awsCfg aws.Config, state *stepState) (int, error) {
 	sp := createSpinner("Fetching ECS containers...")
-	ecsClient := ecs.NewFromConfig(awsCfg)
-	c.LogAWSCommand("ecs", "describe-tasks", "--cluster", state.ClusterArn, "--tasks", state.TaskArn, "--profile", c.Profile, "--region", c.Region)
-	containers, err := c.ListContainerNames(ctx, ecsClient, state.ClusterArn, state.TaskArn)
+	client := cli.NewECSClient(awsCfg, c.Region)
+	out, action, err := cli.PickContainer(ctx, c, c.CliSelector(), client, toCliState(*state))
 	sp.Stop()
-	if err != nil {
-		fmt.Println("Failed to describe ECS task:", err)
-		resetFrom(state, stepContainer)
-		return -1, nil
+	*state = fromCliState(out)
+	return int(action), err
+}
+
+func toCliState(s stepState) cli.State {
+	return cli.State{
+		Profile: s.Profile, Region: s.Region, ClusterArn: s.ClusterArn,
+		Service: s.Service, TaskArn: s.TaskArn, Container: s.Container,
 	}
-	if len(containers) == 0 {
-		fmt.Println("No containers found. Going back.")
-		resetFrom(state, stepContainer)
-		return -1, nil
+}
+
+func fromCliState(s cli.State) stepState {
+	return stepState{
+		Profile: s.Profile, Region: s.Region, ClusterArn: s.ClusterArn,
+		Service: s.Service, TaskArn: s.TaskArn, Container: s.Container,
 	}
-	selected, goBack := c.PromptSelect("Choose a container", containers, state.Container, true)
-	if goBack {
-		resetFrom(state, stepContainer)
-		return -1, nil
-	}
-	state.Container = selected
-	c.Container = state.Container
-	return 1, nil
 }
 
 func discoverRegions(ctx context.Context, c *cli.Cli) ([]string, error) {
@@ -422,123 +383,6 @@ func validateSSOSession(ctx context.Context, c *cli.Cli, awsCfg aws.Config) erro
 		return ensureSSOLogin(ctx, c)
 	}
 	return nil
-}
-
-func executeECSCommand(c *cli.Cli, clusterArn, taskArn string, container string) {
-	executeCmd := []string{
-		"ecs", "execute-command",
-		"--cluster", clusterArn,
-		"--task", taskArn,
-		"--container", container,
-		"--interactive",
-		"--command", c.Command,
-		"--profile", c.Profile,
-		"--region", c.Region,
-	}
-
-	c.LogAWSCommand(executeCmd[0], executeCmd[1:]...)
-	cmd := exec.Command("aws", executeCmd...)
-
-	c.AppendToHistory("aws " + strings.Join(executeCmd, " "))
-
-	ptmx, err := pty.Start(cmd)
-	if err != nil {
-		// Print a helpful error and bail out — DO NOT continue into setup
-		// with a nil ptmx (the previous code did that and would nil-deref
-		// the moment LogUserFriendlyError's exit was stubbed in tests).
-		fmt.Fprintf(os.Stderr, "Failed to start PTY session: %v\n", err)
-		os.Exit(1)
-	}
-	defer func() { _ = ptmx.Close() }()
-
-	// Forward SIGWINCH so the inner shell sees terminal resizes.
-	resizeCh := make(chan os.Signal, 1)
-	signal.Notify(resizeCh, syscall.SIGWINCH)
-	defer signal.Stop(resizeCh)
-	go func() {
-		for range resizeCh {
-			_ = pty.InheritSize(os.Stdin, ptmx)
-		}
-	}()
-	resizeCh <- syscall.SIGWINCH // prime once so PTY matches our size
-
-	// Restore the terminal state even if a fatal signal lands while we're
-	// in raw mode. Without this, Ctrl-C during the session leaves the
-	// user's shell in raw mode with no echo.
-	exitCode := setupTerminalForPTY(ptmx, cmd)
-	os.Exit(exitCode)
-}
-
-// setupTerminalForPTY puts the controlling TTY into raw mode, copies bytes
-// between the PTY and stdio, and waits for the child to exit. Returns the
-// child's exit code (or 1 on copy failure) so the caller can mirror it.
-func setupTerminalForPTY(ptmx *os.File, cmd *exec.Cmd) int {
-	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
-	if err != nil {
-		log.Printf("[ERROR] Failed to set terminal to raw mode: %v", err)
-		_ = cmd.Wait()
-		return 1
-	}
-	restore := func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }
-
-	// Catch fatal signals so we restore the terminal before the OS kills us.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-	go func() {
-		s, ok := <-sigCh
-		if !ok {
-			return
-		}
-		restore()
-		// Forward the signal to the child so `aws` cleans up.
-		if cmd.Process != nil {
-			_ = cmd.Process.Signal(s)
-		}
-	}()
-	defer signal.Stop(sigCh)
-	defer restore()
-
-	// Output goroutine: when the PTY EOFs (child exited), copy returns and
-	// we tear down stdin too so wg.Wait() can finish without waiting for
-	// the user to hit Ctrl-D.
-	done := make(chan struct{})
-	go func() {
-		buf := make([]byte, 4096)
-		_, _ = io.CopyBuffer(os.Stdout, ptmx, buf)
-		close(done)
-	}()
-
-	// Input goroutine: relays stdin to the PTY; exits when stdin closes or
-	// the output goroutine signals that the child is gone.
-	go func() {
-		buf := make([]byte, 1)
-		for {
-			select {
-			case <-done:
-				return
-			default:
-			}
-			n, err := os.Stdin.Read(buf)
-			if n > 0 {
-				if _, werr := ptmx.Write(buf[:n]); werr != nil {
-					return
-				}
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-
-	<-done
-
-	if err := cmd.Wait(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return exitErr.ExitCode()
-		}
-		return 1
-	}
-	return 0
 }
 
 func createSpinner(suffix string) *spinner.Spinner {

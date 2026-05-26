@@ -38,7 +38,9 @@ func TestSetThemeByName(t *testing.T) {
 
 func TestSaveAndLoadThemeSelection(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
+	prev := configDirOverride
+	configDirOverride = tmp
+	t.Cleanup(func() { configDirOverride = prev })
 
 	if got := LoadThemeSelection(); got != "" {
 		t.Fatalf("expected empty, got %q", got)
@@ -49,7 +51,7 @@ func TestSaveAndLoadThemeSelection(t *testing.T) {
 		t.Fatalf("expected Matrix, got %q", got)
 	}
 
-	stat, err := os.Stat(filepath.Join(tmp, ".ecs_cli_theme"))
+	stat, err := os.Stat(filepath.Join(tmp, "theme"))
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}

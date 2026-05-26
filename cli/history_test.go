@@ -1,10 +1,14 @@
 package cli
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func setHistoryFile(t *testing.T) string {
@@ -78,6 +82,63 @@ func TestAppendHistoryUnwritable(t *testing.T) {
 
 	// Should not panic, just fail silently.
 	AppendToHistory("anything")
+}
+
+func TestTruncateForDisplay(t *testing.T) {
+	t.Parallel()
+	if got := truncateForDisplay("short cmd"); got != "short cmd" {
+		t.Fatalf("got %q", got)
+	}
+	// Internal newlines/whitespace collapse to single spaces.
+	in := "aws  ecs\nexecute-command --cluster foo"
+	want := "aws ecs execute-command --cluster foo"
+	if got := truncateForDisplay(in); got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+	// Over-limit string ends with the ellipsis and is exactly the cap.
+	long := strings.Repeat("x", 200)
+	got := truncateForDisplay(long)
+	if len([]rune(got)) != historyDisplayMaxRune {
+		t.Fatalf("len(got)=%d want %d", len([]rune(got)), historyDisplayMaxRune)
+	}
+	if !strings.HasSuffix(got, historyDisplayEllipsis) {
+		t.Fatalf("missing ellipsis: %q", got)
+	}
+}
+
+func TestCliBubbleteaHistorySelectDelegates(t *testing.T) {
+	setHistoryFile(t)
+	in := newScriptedKeys('\r')
+	defer in.Close()
+	prev := historyExtraOpts
+	historyExtraOpts = []tea.ProgramOption{tea.WithInput(in), tea.WithOutput(io.Discard)}
+	t.Cleanup(func() { historyExtraOpts = prev })
+
+	c := &Cli{}
+	got, err := c.BubbleteaHistorySelect("History", []string{"aws ecs exec foo"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "aws ecs exec foo" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestBubbleteaHistorySelectPicksFirst(t *testing.T) {
+	setHistoryFile(t)
+	in := newScriptedKeys('\r')
+	defer in.Close()
+	prev := historyExtraOpts
+	historyExtraOpts = []tea.ProgramOption{tea.WithInput(in), tea.WithOutput(io.Discard)}
+	t.Cleanup(func() { historyExtraOpts = prev })
+
+	got, err := BubbleteaHistorySelect("History", []string{"aws ecs ... one", "aws ecs ... two"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "aws ecs ... one" {
+		t.Fatalf("expected first item, got %q", got)
+	}
 }
 
 func TestMmWasMouseClick(t *testing.T) {

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -489,15 +488,16 @@ func SetThemeByName(name string) {
 	}
 }
 
-// Persist selected theme to ~/.ecs_cli_theme
+// SaveThemeSelection persists the selected theme to the config dir.
 func SaveThemeSelection(name string) {
-	file := filepath.Join(homeDir(), ".ecs_cli_theme")
-	_ = os.WriteFile(file, []byte(name), 0600)
+	_ = EnsureConfigDir()
+	file := themePath()
+	_ = os.WriteFile(file, []byte(name), 0o600)
 }
 
-// Load selected theme from ~/.ecs_cli_theme
+// LoadThemeSelection reads the previously chosen theme name.
 func LoadThemeSelection() string {
-	file := filepath.Join(homeDir(), ".ecs_cli_theme")
+	file := themePath()
 	data, err := os.ReadFile(file)
 	if err != nil {
 		return ""

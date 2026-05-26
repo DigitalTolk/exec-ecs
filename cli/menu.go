@@ -364,11 +364,10 @@ func (m menuModel) View() string {
 	return s.String()
 }
 
-// maxLayoutWidth caps how wide the menu chrome can grow before we stop
-// stretching it. Past this point the box stays centred and the screen
-// breathes — a fully-maximised terminal otherwise produces a near-empty,
-// painfully wide box.
-const maxLayoutWidth = 100
+// maxLayoutHeight caps the chrome height so a 100-row terminal does not
+// produce a 90-row mostly-empty box. Width is left unbounded — rows fill
+// the screen, the alternating-background pattern is gone, so wide screens
+// look fine.
 const maxLayoutHeight = 28
 
 func (m ideModel) View() string {
@@ -377,7 +376,7 @@ func (m ideModel) View() string {
 		title = "ECS"
 	}
 
-	boxWidth := min(m.width-2, maxLayoutWidth)
+	boxWidth := m.width - 2
 	if boxWidth < 20 {
 		boxWidth = 20
 	}
@@ -395,8 +394,6 @@ func (m ideModel) View() string {
 		Height(boxHeight).
 		Render(m.menu.menuViewOnly())
 
-	centredBox := lipgloss.PlaceHorizontal(m.width, lipgloss.Center, mainBox)
-
 	help := m.menu.menuHelpOnly()
 	status := lipgloss.NewStyle().
 		Background(CurrentTheme.StatusBg).
@@ -405,7 +402,7 @@ func (m ideModel) View() string {
 		Width(m.width).
 		Render(help)
 	titleRendered := lipgloss.PlaceHorizontal(m.width, lipgloss.Center, title)
-	return titleRendered + "\n" + centredBox + "\n" + status
+	return titleRendered + "\n" + mainBox + "\n" + status
 }
 
 func (m ideModel) Init() tea.Cmd {
@@ -418,27 +415,28 @@ func (m ideModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
-		effectiveWidth := min(msg.Width, maxLayoutWidth)
+		// Width runs full-screen now; only height is capped so a tall
+		// terminal doesn't produce a 60-row empty box.
 		effectiveHeight := min(msg.Height, maxLayoutHeight)
 
 		scaleFactor := 1.0
-		if effectiveWidth < 80 {
+		if msg.Width < 80 {
 			scaleFactor = 0.8
-		} else if effectiveWidth > 120 {
+		} else if msg.Width > 120 {
 			scaleFactor = 1.2
 		}
 
 		availableHeight := effectiveHeight - 8
 		itemsPerPage := max(5, min(availableHeight, 20))
 
-		m.menu.width = effectiveWidth
+		m.menu.width = msg.Width
 		m.menu.height = effectiveHeight
 		m.menu.scaleFactor = scaleFactor
 		m.menu.itemsPerPage = itemsPerPage
-		m.menu.viewport.Width = effectiveWidth - 4
+		m.menu.viewport.Width = msg.Width - 4
 		m.menu.viewport.Height = itemsPerPage + 2
 
-		m.menu.textInput.Width = min(50, effectiveWidth-20)
+		m.menu.textInput.Width = min(50, msg.Width-20)
 
 		return m, nil
 	}
@@ -506,10 +504,10 @@ func (m menuModel) menuViewOnly() string {
 	}
 	for i := start; i < end; i++ {
 		item := m.filteredItems[i]
+		// Use a single row style on every row — alternating backgrounds
+		// looked odd on wide terminals because the highlighted strip only
+		// covered the rendered text, not the full row.
 		style := CurrentTheme.ItemStyle
-		if i%2 == 1 {
-			style = CurrentTheme.ItemStyleAlt
-		}
 		icon := CurrentTheme.UnselectedIcon
 		if i-start == m.cursor {
 			icon = CurrentTheme.SelectionIcon

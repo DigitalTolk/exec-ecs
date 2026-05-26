@@ -3,6 +3,7 @@ package cli
 import (
 	"reflect"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -187,6 +188,198 @@ func TestIdeModelView(t *testing.T) {
 	}
 }
 
+func TestMenuModelInitReturnsACmd(t *testing.T) {
+	t.Parallel()
+	m := initialModel("pick", []string{"a"}, "", false)
+	if cmd := m.Init(); cmd == nil {
+		t.Fatal("Init returned nil")
+	}
+}
+
+func TestMenuModelInitMatrixTheme(t *testing.T) {
+	prev := CurrentTheme
+	t.Cleanup(func() { CurrentTheme = prev })
+	CurrentTheme = MatrixTheme
+	m := initialModel("pick", []string{"a"}, "", false)
+	if cmd := m.Init(); cmd == nil {
+		t.Fatal("matrix init should also return a non-nil cmd")
+	}
+}
+
+func TestMenuModelViewQuitting(t *testing.T) {
+	t.Parallel()
+	m := initialModel("pick", []string{"a"}, "", false)
+	m.quitting = true
+	if out := m.View(); out != "" {
+		t.Fatalf("expected empty view when quitting, got %q", out)
+	}
+}
+
+func TestMenuModelViewHelp(t *testing.T) {
+	t.Parallel()
+	m := initialModel("pick", []string{"alpha"}, "", false)
+	m.itemsPerPage = 5
+	m.historyMode = true
+	out := m.View()
+	if out == "" {
+		t.Fatal("history-mode view should render help")
+	}
+}
+
+func TestIdeModelInit(t *testing.T) {
+	t.Parallel()
+	im := ideModel{menu: initialModel("pick", []string{"a"}, "", false)}
+	if cmd := im.Init(); cmd == nil {
+		t.Fatal("nil cmd")
+	}
+}
+
+func TestMenuModelUpdatePageNavigation(t *testing.T) {
+	t.Parallel()
+	items := make([]string, 25)
+	for i := range items {
+		items[i] = "i" + string(rune('a'+i%26))
+	}
+	m := initialModel("pick", items, "", false)
+	m.itemsPerPage = 10
+
+	// pgdown advances pages.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	mm := updated.(menuModel)
+	if mm.page != 1 {
+		t.Fatalf("pgdown page=%d", mm.page)
+	}
+	// pgup rewinds.
+	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	mm = updated.(menuModel)
+	if mm.page != 0 {
+		t.Fatalf("pgup page=%d", mm.page)
+	}
+}
+
+func TestMenuModelUpdateFilterTyping(t *testing.T) {
+	t.Parallel()
+	m := initialModel("pick", []string{"alpha", "alabama", "beta"}, "", false)
+	m.itemsPerPage = 10
+	// Enter filter mode.
+	updated, _ := m.Update(keyMsg("/"))
+	mm := updated.(menuModel)
+	// Type "al".
+	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	mm = updated.(menuModel)
+	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	mm = updated.(menuModel)
+	// alpha and alabama both contain "al".
+	if len(mm.filteredItems) != 2 {
+		t.Fatalf("expected 2 matches, got %v", mm.filteredItems)
+	}
+	// Exit filter via enter — filter mode should drop.
+	updated, _ = mm.Update(keyMsg("enter"))
+	mm = updated.(menuModel)
+	if mm.filterMode {
+		t.Fatal("enter should exit filter mode")
+	}
+}
+
+func TestMenuModelUpdateMouseClick(t *testing.T) {
+	t.Parallel()
+	m := initialModel("pick", []string{"alpha", "beta", "gamma"}, "", false)
+	m.itemsPerPage = 10
+	// MouseLeft at row 4 (item index 0 after the title/border offsets).
+	updated, _ := m.Update(tea.MouseMsg{Type: tea.MouseLeft, Y: 4})
+	mm := updated.(menuModel)
+	if !mm.mouseClicked {
+		t.Fatal("expected mouseClicked")
+	}
+	if mm.choice == "" {
+		t.Fatal("expected a choice")
+	}
+}
+
+func TestMenuModelUpdateTick(t *testing.T) {
+	prev := CurrentTheme
+	t.Cleanup(func() { CurrentTheme = prev })
+	CurrentTheme = MatrixTheme
+	m := initialModel("pick", []string{"a"}, "", false)
+	updated, cmd := m.Update(tickMsg(time.Now()))
+	mm := updated.(menuModel)
+	if mm.frame == 0 {
+		t.Fatal("frame should advance on tick")
+	}
+	if cmd == nil {
+		t.Fatal("matrix tick should schedule next tick")
+	}
+}
+
+func TestMenuModelUpdateTickNonMatrix(t *testing.T) {
+	prev := CurrentTheme
+	t.Cleanup(func() { CurrentTheme = prev })
+	CurrentTheme = DraculaTheme
+	m := initialModel("pick", []string{"a"}, "", false)
+	updated, cmd := m.Update(tickMsg(time.Now()))
+	mm := updated.(menuModel)
+	if mm.frame != 0 {
+		t.Fatal("non-matrix theme should ignore tick")
+	}
+	_ = cmd
+}
+
+func TestMenuModelUpdateCtrlLeft(t *testing.T) {
+	t.Parallel()
+	m := initialModel("pick", []string{"a"}, "", true)
+	m.itemsPerPage = 10
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlLeft})
+	mm := updated.(menuModel)
+	if !mm.goBackTriggered || !mm.quitting {
+		t.Fatalf("ctrl+left should trigger goBack: %+v", mm)
+	}
+}
+
+func TestMenuViewOnlyAcrossThemes(t *testing.T) {
+	prev := CurrentTheme
+	t.Cleanup(func() { CurrentTheme = prev })
+
+	for _, theme := range allThemes {
+		CurrentTheme = theme
+		m := initialModel("pick", []string{"a", "b"}, "", false)
+		m.itemsPerPage = 5
+		if out := m.menuViewOnly(); out == "" {
+			t.Fatalf("menuViewOnly empty under theme %s", theme.Name)
+		}
+	}
+}
+
+func TestThemePreviewSwitches(t *testing.T) {
+	prev := CurrentTheme
+	t.Cleanup(func() { CurrentTheme = prev })
+
+	m := initialModel("Select Theme", GetThemeNames(), "", false)
+	m.itemsPerPage = 20
+	m.isThemeSelection = true
+	m.originalTheme = CurrentTheme
+	m.updateThemePreview()
+	if m.previewTheme == nil {
+		t.Fatal("expected a previewTheme after first update")
+	}
+	// Move cursor; preview should swap.
+	first := m.previewTheme
+	m.cursor = 1
+	m.updateThemePreview()
+	if m.previewTheme == first {
+		t.Fatal("preview did not change with cursor")
+	}
+}
+
+func TestIdeModelViewQuitting(t *testing.T) {
+	t.Parallel()
+	im := ideModel{menu: initialModel("pick", []string{"a"}, "", false), width: 80, height: 20}
+	im.menu.quitting = true
+	// View only short-circuits in menuViewOnly; ideModel.View still renders.
+	if out := im.View(); out == "" {
+		t.Fatal("ide view should render frame even when inner menu is quitting")
+	}
+}
+
 func TestIdeModelWindowResize(t *testing.T) {
 	t.Parallel()
 	im := ideModel{menu: initialModel("Pick", []string{"a"}, "", false)}
@@ -195,7 +388,11 @@ func TestIdeModelWindowResize(t *testing.T) {
 	if im2.width != 200 || im2.height != 60 {
 		t.Fatalf("width/height not updated: %+v", im2)
 	}
-	if im2.menu.width > maxLayoutWidth || im2.menu.height > maxLayoutHeight {
-		t.Fatalf("menu dims should be capped: %+v", im2.menu)
+	// Width now scales freely (full terminal); only height is capped.
+	if im2.menu.width != 200 {
+		t.Fatalf("menu width should match terminal width, got %d", im2.menu.width)
+	}
+	if im2.menu.height > maxLayoutHeight {
+		t.Fatalf("menu height should be capped at %d, got %d", maxLayoutHeight, im2.menu.height)
 	}
 }

@@ -5,12 +5,14 @@ import (
 	"io"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
 var cmdLogger = log.New(os.Stdout, "\n [AWS CMD] ", log.Ltime)
-var historyFile = filepath.Join(homeDir(), ".ecs_cli_history")
+// historyFile is a `var` so tests can rebind it. In normal runs it always
+// resolves to the standard config dir; we only fall back to legacy paths via
+// migrateLegacyPaths() at startup.
+var historyFile = historyPath()
 
 // errorWriter and exitFn are package-level so tests can capture output without
 // actually exiting the process.
@@ -42,12 +44,13 @@ func (c *Cli) LogUserFriendlyError(message string, err error, potentialFix, file
 
 // Append a command to the history file
 func AppendToHistory(cmd string) {
-	f, err := os.OpenFile(historyFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	_ = EnsureConfigDir()
+	f, err := os.OpenFile(historyFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return // fail silently
 	}
 	defer f.Close()
-	f.WriteString(cmd + "\n")
+	_, _ = f.WriteString(cmd + "\n")
 }
 
 // Get the last 5 unique commands from history, most recent first

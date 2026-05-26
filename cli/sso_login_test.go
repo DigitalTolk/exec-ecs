@@ -14,6 +14,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ssooidc"
+	ssooidctypes "github.com/aws/aws-sdk-go-v2/service/ssooidc/types"
 )
 
 func TestSplitCSV(t *testing.T) {
@@ -268,6 +269,180 @@ func TestPerformNativeSSOLoginRejectsIncompleteConfig(t *testing.T) {
 	}
 }
 
+type fakeOIDCClient struct {
+	registerOut *ssooidc.RegisterClientOutput
+	registerErr error
+	devAuth     *ssooidc.StartDeviceAuthorizationOutput
+	devAuthErr  error
+	createOut   *ssooidc.CreateTokenOutput
+	createErr   error
+	createCalls int
+}
+
+func (f *fakeOIDCClient) RegisterClient(_ context.Context, _ *ssooidc.RegisterClientInput, _ ...func(*ssooidc.Options)) (*ssooidc.RegisterClientOutput, error) {
+	if f.registerErr != nil {
+		return nil, f.registerErr
+	}
+	if f.registerOut != nil {
+		return f.registerOut, nil
+	}
+	return &ssooidc.RegisterClientOutput{
+		ClientId:              aws.String("client-id"),
+		ClientSecret:          aws.String("client-secret"),
+		ClientSecretExpiresAt: time.Now().Add(24 * time.Hour).Unix(),
+	}, nil
+}
+func (f *fakeOIDCClient) StartDeviceAuthorization(_ context.Context, _ *ssooidc.StartDeviceAuthorizationInput, _ ...func(*ssooidc.Options)) (*ssooidc.StartDeviceAuthorizationOutput, error) {
+	if f.devAuthErr != nil {
+		return nil, f.devAuthErr
+	}
+	if f.devAuth != nil {
+		return f.devAuth, nil
+	}
+	return &ssooidc.StartDeviceAuthorizationOutput{
+		DeviceCode:              aws.String("dev-code"),
+		UserCode:                aws.String("user-code"),
+		VerificationUriComplete: aws.String("https://example/verify"),
+		ExpiresIn:               60,
+		Interval:                1,
+	}, nil
+}
+func (f *fakeOIDCClient) CreateToken(_ context.Context, _ *ssooidc.CreateTokenInput, _ ...func(*ssooidc.Options)) (*ssooidc.CreateTokenOutput, error) {
+	f.createCalls++
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
+	if f.createOut != nil {
+		return f.createOut, nil
+	}
+	return &ssooidc.CreateTokenOutput{
+		AccessToken: aws.String("access"),
+		ExpiresIn:   3600,
+	}, nil
+}
+
+func TestPerformNativeSSOLoginHappyPath(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	fakeClient := &fakeOIDCClient{}
+	browsed := false
+	prevClient, prevBrowser, prevWait := newOIDCClient, browserOpener, pollWait
+	newOIDCClient = func(_ context.Context, _ string) (ssoOIDCClient, error) { return fakeClient, nil }
+	browserOpener = func(_ string) error { browsed = true; return nil }
+	pollWait = func(_ context.Context, _ time.Duration) error { return nil }
+	t.Cleanup(func() {
+		newOIDCClient = prevClient
+		browserOpener = prevBrowser
+		pollWait = prevWait
+	})
+
+	c := &Cli{}
+	err := c.PerformNativeSSOLogin(context.Background(), &SSOSessionConfig{
+		Name: "main", StartURL: "https://example.awsapps.com/start", Region: "us-east-1",
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !browsed {
+		t.Fatal("browser was not opened")
+	}
+	if !SSOCacheIsValid("main") {
+		t.Fatal("token cache should now be valid")
+	}
+}
+
+func TestPerformNativeSSOLoginRetriesOnAuthorizationPending(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	pendingErr := &ssooidctypes.AuthorizationPendingException{Message: aws.String("wait")}
+	calls := 0
+	fakeClient := &fakeOIDCClientCustom{
+		registerFn: func() (*ssooidc.RegisterClientOutput, error) {
+			return &ssooidc.RegisterClientOutput{
+				ClientId: aws.String("id"), ClientSecret: aws.String("sec"),
+				ClientSecretExpiresAt: time.Now().Add(time.Hour).Unix(),
+			}, nil
+		},
+		devAuthFn: func() (*ssooidc.StartDeviceAuthorizationOutput, error) {
+			return &ssooidc.StartDeviceAuthorizationOutput{
+				DeviceCode: aws.String("dc"), UserCode: aws.String("uc"),
+				VerificationUriComplete: aws.String("https://x/v"),
+				ExpiresIn:               30, Interval: 1,
+			}, nil
+		},
+		createTokenFn: func() (*ssooidc.CreateTokenOutput, error) {
+			calls++
+			if calls < 3 {
+				return nil, pendingErr
+			}
+			return &ssooidc.CreateTokenOutput{
+				AccessToken: aws.String("tok"), ExpiresIn: 3600,
+			}, nil
+		},
+	}
+
+	prevClient, prevBrowser, prevWait := newOIDCClient, browserOpener, pollWait
+	newOIDCClient = func(_ context.Context, _ string) (ssoOIDCClient, error) { return fakeClient, nil }
+	browserOpener = func(_ string) error { return nil }
+	pollWait = func(_ context.Context, _ time.Duration) error { return nil }
+	t.Cleanup(func() {
+		newOIDCClient = prevClient
+		browserOpener = prevBrowser
+		pollWait = prevWait
+	})
+
+	c := &Cli{}
+	if err := c.PerformNativeSSOLogin(context.Background(), &SSOSessionConfig{
+		Name: "main", StartURL: "https://x", Region: "us-east-1",
+	}); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if calls < 3 {
+		t.Fatalf("expected at least 3 CreateToken calls, got %d", calls)
+	}
+}
+
+type fakeOIDCClientCustom struct {
+	registerFn    func() (*ssooidc.RegisterClientOutput, error)
+	devAuthFn     func() (*ssooidc.StartDeviceAuthorizationOutput, error)
+	createTokenFn func() (*ssooidc.CreateTokenOutput, error)
+}
+
+func (f *fakeOIDCClientCustom) RegisterClient(_ context.Context, _ *ssooidc.RegisterClientInput, _ ...func(*ssooidc.Options)) (*ssooidc.RegisterClientOutput, error) {
+	return f.registerFn()
+}
+func (f *fakeOIDCClientCustom) StartDeviceAuthorization(_ context.Context, _ *ssooidc.StartDeviceAuthorizationInput, _ ...func(*ssooidc.Options)) (*ssooidc.StartDeviceAuthorizationOutput, error) {
+	return f.devAuthFn()
+}
+func (f *fakeOIDCClientCustom) CreateToken(_ context.Context, _ *ssooidc.CreateTokenInput, _ ...func(*ssooidc.Options)) (*ssooidc.CreateTokenOutput, error) {
+	return f.createTokenFn()
+}
+
+func TestPerformNativeSSOLoginPropagatesAuthError(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	fakeClient := &fakeOIDCClient{devAuthErr: errors.New("denied")}
+	prevClient, prevBrowser, prevWait := newOIDCClient, browserOpener, pollWait
+	newOIDCClient = func(_ context.Context, _ string) (ssoOIDCClient, error) { return fakeClient, nil }
+	browserOpener = func(_ string) error { return nil }
+	pollWait = func(_ context.Context, _ time.Duration) error { return nil }
+	t.Cleanup(func() {
+		newOIDCClient = prevClient
+		browserOpener = prevBrowser
+		pollWait = prevWait
+	})
+
+	c := &Cli{}
+	if err := c.PerformNativeSSOLogin(context.Background(), &SSOSessionConfig{
+		Name: "main", StartURL: "https://x/start", Region: "us-east-1",
+	}); err == nil {
+		t.Fatal("expected device-auth error to propagate")
+	}
+}
+
 func TestSSOTokenCacheJSONFields(t *testing.T) {
 	t.Parallel()
 	tok := ssoTokenCache{
@@ -299,5 +474,29 @@ func TestOpenBrowserSkipsEmptyURL(t *testing.T) {
 	t.Parallel()
 	if err := openBrowser(""); err != nil {
 		t.Fatalf("openBrowser(\"\") should be a no-op: %v", err)
+	}
+}
+
+func TestOpenBrowserInvokesPlatformOpener(t *testing.T) {
+	// Just ensure it doesn't panic. On linux/darwin/windows it tries to
+	// exec a real opener; we only call it with `false` on PATH so the exec
+	// either fails silently or returns an error — both are acceptable.
+	t.Setenv("PATH", t.TempDir())
+	_ = openBrowser("https://example.com")
+}
+
+func TestPollWaitContextCancellation(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := pollWait(ctx, time.Hour); err == nil {
+		t.Fatal("expected ctx.Err()")
+	}
+}
+
+func TestPollWaitZeroDuration(t *testing.T) {
+	t.Parallel()
+	if err := pollWait(context.Background(), 0); err != nil {
+		t.Fatalf("zero duration should return nil err, got %v", err)
 	}
 }
