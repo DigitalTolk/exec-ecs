@@ -1,0 +1,66 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: ["*"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify go.mod is tidy
+        run: |
+          go mod tidy
+          if ! git diff --quiet -- go.mod go.sum; then
+            echo "go.mod / go.sum are not tidy"
+            git diff -- go.mod go.sum
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test with coverage
+        run: |
+          go test -race -covermode=atomic -coverprofile=coverage.out ./...
+          go tool cover -func=coverage.out
+
+      # The cli package owns the business logic. main.go and installer.go are
+      # mostly thin wrappers around exec.Command / interactive TTY code that we
+      # validate manually, so we enforce a high bar on cli specifically and a
+      # lower bar on the overall total.
+      - name: Enforce coverage thresholds
+        env:
+          MIN_CLI_COVERAGE: "50"
+          MIN_TOTAL_COVERAGE: "30"
+        run: |
+          cli=$(go tool cover -func=coverage.out | awk '$1 ~ /^ecs-tool\/cli\// { sum += $NF + 0; n += 1 } END { if (n) printf("%.1f", sum/n); else print "0" }')
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ { gsub("%",""); print $3 }')
+          echo "cli coverage: ${cli}%  (min ${MIN_CLI_COVERAGE}%)"
+          echo "total coverage: ${total}%  (min ${MIN_TOTAL_COVERAGE}%)"
+          awk -v c="$cli" -v m="$MIN_CLI_COVERAGE" 'BEGIN { if (c+0 < m+0) { printf("cli coverage %s%% < required %s%%\n", c, m); exit 1 } }'
+          awk -v t="$total" -v m="$MIN_TOTAL_COVERAGE" 'BEGIN { if (t+0 < m+0) { printf("total coverage %s%% < required %s%%\n", t, m); exit 1 } }'
+
+      - name: Upload coverage artefact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.out
+          if-no-files-found: ignore

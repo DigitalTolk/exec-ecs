@@ -2,18 +2,27 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"gopkg.in/ini.v1"
 )
 
-func (c *Cli) CheckSSOSession(ctx context.Context, client *sts.Client, profile string) error {
+// stsCallerIdentity is the minimal interface CheckSSOSession needs from the
+// real STS client, captured so tests can supply a stub.
+type stsCallerIdentity interface {
+	GetCallerIdentity(ctx context.Context, params *sts.GetCallerIdentityInput, optFns ...func(*sts.Options)) (*sts.GetCallerIdentityOutput, error)
+}
+
+func (c *Cli) CheckSSOSession(ctx context.Context, client stsCallerIdentity, profile string) error {
+	_ = profile
 	_, err := client.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
 	return err
 }
@@ -33,6 +42,35 @@ func (c *Cli) saveCustomConfigPath(path string) error {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 	return os.WriteFile(customPathFile, []byte(path), 0600)
+}
+
+// AWSConfigPath returns the path the tool should read for AWS profile data,
+// preferring an explicit override stored alongside ~/.aws/config.
+func (c *Cli) AWSConfigPath() string {
+	if p := c.getStoredConfigPath(); p != "" {
+		return p
+	}
+	return os.Getenv("HOME") + "/.aws/config"
+}
+
+// LookupSSOSessionForProfile reads the AWS shared config and returns the
+// sso_session name configured for the given profile, if any. This lets the
+// caller issue a single `aws sso login --sso-session <name>` that covers every
+// profile bound to the same SSO session, instead of forcing the user to log in
+// per-profile.
+func (c *Cli) LookupSSOSessionForProfile(profile string) string {
+	cfg, err := ini.Load(c.AWSConfigPath())
+	if err != nil {
+		return ""
+	}
+	section, err := cfg.GetSection("profile " + profile)
+	if err != nil {
+		return ""
+	}
+	if !section.HasKey("sso_session") {
+		return ""
+	}
+	return strings.TrimSpace(section.Key("sso_session").String())
 }
 
 func (c *Cli) SelectProfile() string {
@@ -59,8 +97,8 @@ func (c *Cli) SelectProfile() string {
 	}
 	var profiles []string
 	for _, section := range cfg.Sections() {
-		if strings.HasPrefix(section.Name(), "profile ") {
-			profiles = append(profiles, strings.TrimPrefix(section.Name(), "profile "))
+		if name, ok := strings.CutPrefix(section.Name(), "profile "); ok {
+			profiles = append(profiles, name)
 		}
 	}
 	if len(profiles) == 0 {
@@ -71,13 +109,12 @@ func (c *Cli) SelectProfile() string {
 }
 
 func (c *Cli) SelectCluster(ctx context.Context, client *ecs.Client) (string, error) {
-	output, err := client.ListClusters(ctx, &ecs.ListClustersInput{})
+	clusters, err := listAllClusterArns(ctx, client)
 	if err != nil {
 		return "", err
 	}
-	clusters := output.ClusterArns
 	if len(clusters) == 0 {
-		return "", fmt.Errorf("no ECS clusters found")
+		return "", errors.New("no ECS clusters found")
 	}
 	clusterNames := make([]string, len(clusters))
 	for i, arn := range clusters {
@@ -89,15 +126,10 @@ func (c *Cli) SelectCluster(ctx context.Context, client *ecs.Client) (string, er
 }
 
 func (c *Cli) SelectService(ctx context.Context, client *ecs.Client, clusterArn string) (string, error) {
-	maxResults := int32(100)
-	output, err := client.ListServices(ctx, &ecs.ListServicesInput{
-		Cluster:    &clusterArn,
-		MaxResults: &maxResults,
-	})
+	services, err := listAllServiceArns(ctx, client, clusterArn)
 	if err != nil {
 		return "", err
 	}
-	services := output.ServiceArns
 	if len(services) == 0 {
 		return "", fmt.Errorf("no services found in ECS cluster %s", clusterArn)
 	}
@@ -118,24 +150,9 @@ func maskTaskArn(taskArn string) string {
 }
 
 func (c *Cli) SelectTask(ctx context.Context, client *ecs.Client, clusterArn, serviceName string) (string, error) {
-	var (
-		taskArns  []string
-		nextToken *string
-	)
-	for {
-		output, err := client.ListTasks(ctx, &ecs.ListTasksInput{
-			Cluster:     &clusterArn,
-			ServiceName: &serviceName,
-			NextToken:   nextToken,
-		})
-		if err != nil {
-			return "", err
-		}
-		taskArns = append(taskArns, output.TaskArns...)
-		if output.NextToken == nil {
-			break
-		}
-		nextToken = output.NextToken
+	taskArns, err := listAllTaskArns(ctx, client, clusterArn, serviceName)
+	if err != nil {
+		return "", err
 	}
 	if len(taskArns) == 0 {
 		return "", fmt.Errorf("no tasks found for service %s", serviceName)
@@ -176,4 +193,91 @@ func (c *Cli) SelectContainer(ctx context.Context, client *ecs.Client, clusterAr
 	}
 	selectedContainer, _ := c.PromptSelect("Choose a container", containerNames, "", false)
 	return selectedContainer, nil
+}
+
+// Small interfaces over the AWS SDK ECS client. We define them at the call
+// site (instead of importing the SDK's huge surface) so tests can supply
+// fakes without depending on the real SDK.
+
+type ecsClusterLister interface {
+	ListClusters(ctx context.Context, params *ecs.ListClustersInput, optFns ...func(*ecs.Options)) (*ecs.ListClustersOutput, error)
+}
+
+type ecsServiceLister interface {
+	ListServices(ctx context.Context, params *ecs.ListServicesInput, optFns ...func(*ecs.Options)) (*ecs.ListServicesOutput, error)
+}
+
+type ecsTaskLister interface {
+	ListTasks(ctx context.Context, params *ecs.ListTasksInput, optFns ...func(*ecs.Options)) (*ecs.ListTasksOutput, error)
+}
+
+type ecsTaskDescriber interface {
+	DescribeTasks(ctx context.Context, params *ecs.DescribeTasksInput, optFns ...func(*ecs.Options)) (*ecs.DescribeTasksOutput, error)
+}
+
+// listAllClusterArns paginates ECS ListClusters so users with more than the
+// default page size of clusters still see every cluster.
+func listAllClusterArns(ctx context.Context, client ecsClusterLister) ([]string, error) {
+	var (
+		arns      []string
+		nextToken *string
+	)
+	for {
+		out, err := client.ListClusters(ctx, &ecs.ListClustersInput{
+			MaxResults: aws.Int32(100),
+			NextToken:  nextToken,
+		})
+		if err != nil {
+			return nil, err
+		}
+		arns = append(arns, out.ClusterArns...)
+		if out.NextToken == nil || *out.NextToken == "" {
+			return arns, nil
+		}
+		nextToken = out.NextToken
+	}
+}
+
+func listAllServiceArns(ctx context.Context, client ecsServiceLister, clusterArn string) ([]string, error) {
+	var (
+		arns      []string
+		nextToken *string
+	)
+	for {
+		out, err := client.ListServices(ctx, &ecs.ListServicesInput{
+			Cluster:    &clusterArn,
+			MaxResults: aws.Int32(100),
+			NextToken:  nextToken,
+		})
+		if err != nil {
+			return nil, err
+		}
+		arns = append(arns, out.ServiceArns...)
+		if out.NextToken == nil || *out.NextToken == "" {
+			return arns, nil
+		}
+		nextToken = out.NextToken
+	}
+}
+
+func listAllTaskArns(ctx context.Context, client ecsTaskLister, clusterArn, serviceName string) ([]string, error) {
+	var (
+		arns      []string
+		nextToken *string
+	)
+	for {
+		out, err := client.ListTasks(ctx, &ecs.ListTasksInput{
+			Cluster:     &clusterArn,
+			ServiceName: &serviceName,
+			NextToken:   nextToken,
+		})
+		if err != nil {
+			return nil, err
+		}
+		arns = append(arns, out.TaskArns...)
+		if out.NextToken == nil || *out.NextToken == "" {
+			return arns, nil
+		}
+		nextToken = out.NextToken
+	}
 }

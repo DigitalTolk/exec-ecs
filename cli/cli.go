@@ -95,104 +95,86 @@ func (c *Cli) SelectProfileList() []string {
 	}
 	var profiles []string
 	for _, section := range cfg.Sections() {
-		if strings.HasPrefix(section.Name(), "profile ") {
-			profiles = append(profiles, strings.TrimPrefix(section.Name(), "profile "))
+		if name, ok := strings.CutPrefix(section.Name(), "profile "); ok {
+			profiles = append(profiles, name)
 		}
 	}
 	return profiles
 }
 
-// Helper to get cluster display names and a map from name to ARN
-func (c *Cli) ListClusterNamesArns(ctx context.Context, client *ecs.Client) ([]string, map[string]string) {
-	output, err := client.ListClusters(ctx, &ecs.ListClustersInput{})
+// Helper to get cluster display names and a map from name to ARN.
+// Returns an error so callers can distinguish "API failure" from "no clusters".
+func (c *Cli) ListClusterNamesArns(ctx context.Context, client ecsClusterLister) ([]string, map[string]string, error) {
+	clusters, err := listAllClusterArns(ctx, client)
 	if err != nil {
-		return nil, nil
+		return nil, nil, err
 	}
-	clusters := output.ClusterArns
-	nameToArn := make(map[string]string)
-	var names []string
-	for _, arn := range clusters {
-		parts := strings.Split(arn, "/")
-		name := parts[len(parts)-1]
-		nameToArn[name] = arn
-		names = append(names, name)
-	}
-	return names, nameToArn
+	return namesAndArns(clusters), arnMap(clusters), nil
 }
 
-// Helper to get service display names and a map from name to ARN
-func (c *Cli) ListServiceNamesArns(ctx context.Context, client *ecs.Client, clusterArn string) ([]string, map[string]string) {
-	maxResults := int32(100)
-	output, err := client.ListServices(ctx, &ecs.ListServicesInput{
-		Cluster:    &clusterArn,
-		MaxResults: &maxResults,
-	})
+// Helper to get service display names and a map from name to ARN.
+func (c *Cli) ListServiceNamesArns(ctx context.Context, client ecsServiceLister, clusterArn string) ([]string, map[string]string, error) {
+	services, err := listAllServiceArns(ctx, client, clusterArn)
 	if err != nil {
-		return nil, nil
+		return nil, nil, err
 	}
-	services := output.ServiceArns
-	nameToArn := make(map[string]string)
-	var names []string
-	for _, arn := range services {
-		parts := strings.Split(arn, "/")
-		name := parts[len(parts)-1]
-		nameToArn[name] = arn
-		names = append(names, name)
-	}
-	return names, nameToArn
+	return namesAndArns(services), arnMap(services), nil
 }
 
-// Helper to get task display names and a map from masked name to ARN
-func (c *Cli) ListTaskNamesArns(ctx context.Context, client *ecs.Client, clusterArn, serviceName string) ([]string, map[string]string) {
-	var (
-		taskArns  []string
-		nextToken *string
-	)
-	for {
-		output, err := client.ListTasks(ctx, &ecs.ListTasksInput{
-			Cluster:     &clusterArn,
-			ServiceName: &serviceName,
-			NextToken:   nextToken,
-		})
-		if err != nil {
-			return nil, nil
-		}
-		taskArns = append(taskArns, output.TaskArns...)
-		if output.NextToken == nil {
-			break
-		}
-		nextToken = output.NextToken
+// Helper to get task display names and a map from masked name to ARN.
+func (c *Cli) ListTaskNamesArns(ctx context.Context, client ecsTaskLister, clusterArn, serviceName string) ([]string, map[string]string, error) {
+	taskArns, err := listAllTaskArns(ctx, client, clusterArn, serviceName)
+	if err != nil {
+		return nil, nil, err
 	}
-	nameToArn := make(map[string]string)
-	var masked []string
+	nameToArn := make(map[string]string, len(taskArns))
+	masked := make([]string, 0, len(taskArns))
 	for _, arn := range taskArns {
 		mask := maskTaskArn(arn)
 		nameToArn[mask] = arn
 		masked = append(masked, mask)
 	}
-	return masked, nameToArn
+	return masked, nameToArn, nil
 }
 
 // Helper to get container names for a given task
-func (c *Cli) ListContainerNames(ctx context.Context, client *ecs.Client, clusterArn, taskArn string) []string {
+func (c *Cli) ListContainerNames(ctx context.Context, client ecsTaskDescriber, clusterArn, taskArn string) ([]string, error) {
 	output, err := client.DescribeTasks(ctx, &ecs.DescribeTasksInput{
 		Cluster: &clusterArn,
 		Tasks:   []string{taskArn},
 	})
-	if err != nil || len(output.Tasks) == 0 {
-		return nil
+	if err != nil {
+		return nil, err
+	}
+	if len(output.Tasks) == 0 {
+		return nil, nil
 	}
 	task := output.Tasks[0]
-	if len(task.Containers) == 0 {
-		return nil
-	}
-	var names []string
+	names := make([]string, 0, len(task.Containers))
 	for _, cont := range task.Containers {
 		if cont.Name != nil {
 			names = append(names, *cont.Name)
 		}
 	}
+	return names, nil
+}
+
+func namesAndArns(arns []string) []string {
+	names := make([]string, 0, len(arns))
+	for _, arn := range arns {
+		parts := strings.Split(arn, "/")
+		names = append(names, parts[len(parts)-1])
+	}
 	return names
+}
+
+func arnMap(arns []string) map[string]string {
+	out := make(map[string]string, len(arns))
+	for _, arn := range arns {
+		parts := strings.Split(arn, "/")
+		out[parts[len(parts)-1]] = arn
+	}
+	return out
 }
 
 // Update PromptSelect to match new signature

@@ -136,6 +136,12 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
+			// Restore previewed-but-not-applied theme on hard quit so the
+			// user doesn't end up stuck with a temp theme they were only
+			// auditioning.
+			if m.isThemeSelection && m.originalTheme != nil {
+				CurrentTheme = m.originalTheme
+			}
 			m.quitting = true
 			return m, tea.Quit
 
@@ -343,10 +349,26 @@ func (m menuModel) View() string {
 	return s.String()
 }
 
+// maxLayoutWidth caps how wide the menu chrome can grow before we stop
+// stretching it. Past this point the box stays centred and the screen
+// breathes — a fully-maximised terminal otherwise produces a near-empty,
+// painfully wide box.
+const maxLayoutWidth = 100
+const maxLayoutHeight = 28
+
 func (m ideModel) View() string {
 	title := "EXEC ECS"
 	if m.width < 60 {
 		title = "ECS"
+	}
+
+	boxWidth := min(m.width-2, maxLayoutWidth)
+	if boxWidth < 20 {
+		boxWidth = 20
+	}
+	boxHeight := min(m.height-4, maxLayoutHeight)
+	if boxHeight < 8 {
+		boxHeight = 8
 	}
 
 	mainBox := lipgloss.NewStyle().
@@ -354,9 +376,12 @@ func (m ideModel) View() string {
 		BorderForeground(CurrentTheme.MainBorder).
 		Background(CurrentTheme.MainBg).
 		Padding(1, 2).
-		Width(m.width - 2).
-		Height(m.height - 4).
+		Width(boxWidth).
+		Height(boxHeight).
 		Render(m.menu.menuViewOnly())
+
+	centredBox := lipgloss.PlaceHorizontal(m.width, lipgloss.Center, mainBox)
+
 	help := m.menu.menuHelpOnly()
 	status := lipgloss.NewStyle().
 		Background(CurrentTheme.StatusBg).
@@ -365,7 +390,7 @@ func (m ideModel) View() string {
 		Width(m.width).
 		Render(help)
 	titleRendered := lipgloss.PlaceHorizontal(m.width, lipgloss.Center, title)
-	return titleRendered + "\n" + mainBox + "\n" + status
+	return titleRendered + "\n" + centredBox + "\n" + status
 }
 
 func (m ideModel) Init() tea.Cmd {
@@ -378,27 +403,27 @@ func (m ideModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
-		// Calculate scaling based on terminal size
+		effectiveWidth := min(msg.Width, maxLayoutWidth)
+		effectiveHeight := min(msg.Height, maxLayoutHeight)
+
 		scaleFactor := 1.0
-		if msg.Width < 80 {
+		if effectiveWidth < 80 {
 			scaleFactor = 0.8
-		} else if msg.Width > 120 {
+		} else if effectiveWidth > 120 {
 			scaleFactor = 1.2
 		}
 
-		// Calculate items per page based on available height
-		availableHeight := msg.Height - 8                  // Account for borders, title, help, etc.
-		itemsPerPage := max(5, min(availableHeight/2, 20)) // Between 5 and 20 items
+		availableHeight := effectiveHeight - 8
+		itemsPerPage := max(5, min(availableHeight, 20))
 
-		m.menu.width = msg.Width
-		m.menu.height = msg.Height
+		m.menu.width = effectiveWidth
+		m.menu.height = effectiveHeight
 		m.menu.scaleFactor = scaleFactor
 		m.menu.itemsPerPage = itemsPerPage
-		m.menu.viewport.Width = msg.Width - 4
+		m.menu.viewport.Width = effectiveWidth - 4
 		m.menu.viewport.Height = itemsPerPage + 2
 
-		// Adjust text input width based on terminal width
-		m.menu.textInput.Width = min(50, msg.Width-20)
+		m.menu.textInput.Width = min(50, effectiveWidth-20)
 
 		return m, nil
 	}

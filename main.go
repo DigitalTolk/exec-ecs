@@ -10,9 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"time"
-
 	"sync"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -23,99 +22,114 @@ import (
 	"golang.org/x/term"
 )
 
+type stepState struct {
+	Profile    string
+	Region     string
+	ClusterArn string
+	Service    string
+	TaskArn    string
+	Container  string
+}
+
+const (
+	stepProfile   = 0
+	stepRegion    = 1
+	stepCluster   = 2
+	stepService   = 3
+	stepTask      = 4
+	stepContainer = 5
+	finalStep     = 6
+)
+
 func main() {
 	ctx := context.Background()
 
 	installer.CheckAndInstallDependencies()
 
-	cli := initializeCLI(ctx)
+	c := initializeCLI(ctx)
 
-	// Check for history flag
-	if cli.History {
-		showHistoryAndExecute(cli)
+	if c.History {
+		showHistoryAndExecute(c)
 		return
 	}
 
-	// Restore StepState struct and step constants
-	type StepState struct {
-		Profile    string
-		Region     string
-		ClusterArn string
-		Service    string
-		TaskArn    string
-		Container  string
+	state := stepState{
+		Profile:    c.Profile,
+		Region:     c.Region,
+		ClusterArn: c.ClusterArn,
+		Service:    c.Service,
+		TaskArn:    c.TaskArn,
+		Container:  c.Container,
 	}
 
-	state := StepState{
-		Profile:    cli.Profile,
-		Region:     cli.Region,
-		ClusterArn: cli.ClusterArn,
-		Service:    cli.Service,
-		TaskArn:    cli.TaskArn,
-		Container:  cli.Container,
+	if err := runInteractiveSelection(ctx, c, &state); err != nil {
+		c.LogUserFriendlyError("Selection failed", err, "See error details above.", "", 0)
 	}
 
+	executeECSCommand(c, state.ClusterArn, state.TaskArn, state.Container)
+}
+
+func runInteractiveSelection(ctx context.Context, c *cli.Cli, state *stepState) error {
 	step := 0
-	const (
-		stepProfile   = 0
-		stepRegion    = 1
-		stepCluster   = 2
-		stepService   = 3
-		stepTask      = 4
-		stepContainer = 5
-		finalStep     = 6
-	)
-
 	awsCfg := aws.Config{}
 	awsCfgLoaded := false
+	ssoEnsured := false
+
 	for step < finalStep {
 		switch step {
 		case stepProfile:
-			profiles := cli.SelectProfileList()
+			profiles := c.SelectProfileList()
 			if len(profiles) == 0 {
-				fmt.Println("No AWS profiles found. Exiting.")
-				os.Exit(1)
+				return fmt.Errorf("no AWS profiles found")
 			}
-			selected, goBack := cli.PromptSelect("Choose AWS profile", profiles, state.Profile, step > stepProfile)
+			selected, goBack := c.PromptSelect("Choose AWS profile", profiles, state.Profile, step > stepProfile)
 			if goBack && step > stepProfile {
-				state.Profile = ""
-				state.Region = ""
-				state.ClusterArn = ""
-				state.Service = ""
-				state.TaskArn = ""
-				state.Container = ""
+				resetFrom(state, stepProfile)
 				awsCfgLoaded = false
+				ssoEnsured = false
 				step--
 				continue
 			}
 			if state.Profile != selected {
 				awsCfgLoaded = false
+				ssoEnsured = false
 			}
 			state.Profile = selected
-			cli.Profile = selected
-			state.Region = ""
-			state.ClusterArn = ""
-			state.Service = ""
-			state.TaskArn = ""
-			state.Container = ""
+			c.Profile = selected
+			resetFrom(state, stepRegion)
 			step++
+
 		case stepRegion:
-			regions := []string{
-				"us-east-1", "us-east-2", "us-west-1", "us-west-2",
-				"af-south-1",
-				"ap-east-1", "ap-south-1", "ap-south-2", "ap-southeast-1", "ap-southeast-2", "ap-southeast-3", "ap-southeast-4", "ap-northeast-1", "ap-northeast-2", "ap-northeast-3",
-				"ca-central-1",
-				"eu-central-1", "eu-central-2", "eu-west-1", "eu-west-2", "eu-west-3", "eu-north-1", "eu-south-1", "eu-south-2",
-				"me-south-1", "me-central-1",
-				"sa-east-1",
+			if !ssoEnsured {
+				if err := ensureSSOLogin(ctx, c); err != nil {
+					return err
+				}
+				ssoEnsured = true
 			}
-			selected, goBack := cli.PromptWithDefault("Choose AWS region", state.Region, regions, true)
+
+			regions, err := discoverRegions(ctx, c)
+			if err != nil {
+				fmt.Println("Failed to discover regions with clusters:", err)
+				regions = cli.DefaultRegions
+			}
+			if len(regions) == 0 {
+				fmt.Println("No regions with ECS clusters found for profile", c.Profile)
+				choice, goBack := c.PromptSelect("No regions with clusters. What now?",
+					[]string{"Refresh", "Back"}, "Refresh", true)
+				if goBack || choice == "Back" {
+					resetFrom(state, stepProfile)
+					awsCfgLoaded = false
+					ssoEnsured = false
+					step--
+					continue
+				}
+				cli.ClearRegionCache(c.Profile)
+				continue
+			}
+
+			selected, goBack := c.PromptWithDefault("Choose AWS region", state.Region, regions, true)
 			if goBack {
-				state.Region = ""
-				state.ClusterArn = ""
-				state.Service = ""
-				state.TaskArn = ""
-				state.Container = ""
+				resetFrom(state, stepRegion)
 				awsCfgLoaded = false
 				step--
 				continue
@@ -124,259 +138,309 @@ func main() {
 				awsCfgLoaded = false
 			}
 			state.Region = selected
-			cli.Region = selected
-			state.ClusterArn = ""
-			state.Service = ""
-			state.TaskArn = ""
-			state.Container = ""
+			c.Region = selected
+			resetFrom(state, stepCluster)
 			step++
+
 		case stepCluster, stepService, stepTask, stepContainer:
 			if !awsCfgLoaded {
-				awsCfg = loadAWSConfig(ctx, cli)
-				validateSSOSession(ctx, cli, awsCfg)
+				cfg, err := loadAWSConfig(ctx, c)
+				if err != nil {
+					return err
+				}
+				awsCfg = cfg
+				if !ssoEnsured {
+					if err := validateSSOSession(ctx, c, awsCfg); err != nil {
+						return err
+					}
+					ssoEnsured = true
+				}
 				awsCfgLoaded = true
 			}
-			// The rest of the step logic remains unchanged
-			if step == stepCluster {
-				sp := createSpinner("Connecting to ECS...")
-				ecsClient := ecs.NewFromConfig(awsCfg)
-				cli.LogAWSCommand("ecs", "list-clusters", "--profile", cli.Profile, "--region", cli.Region)
-				sp.Stop()
-				clusters, clusterArns := cli.ListClusterNamesArns(ctx, ecsClient)
-				if len(clusters) == 0 {
-					// Stay on the cluster step and let the user decide to retry or go back
-					fmt.Println("No ECS clusters found in region:", cli.Region)
-					choice, goBack := cli.PromptSelect("No clusters found. What would you like to do?", []string{"Retry", "Back"}, "Retry", true)
-					if goBack || choice == "Back" {
-						state.ClusterArn = ""
-						state.Service = ""
-						state.TaskArn = ""
-						state.Container = ""
-						step--
-						continue
-					}
-					// Retry: remain on the same step
-					continue
+
+			switch step {
+			case stepCluster:
+				next, err := pickCluster(ctx, c, awsCfg, state)
+				if err != nil {
+					return err
 				}
-				selected, goBack := cli.PromptSelect("Choose ECS cluster", clusters, getKeyByValue(clusterArns, state.ClusterArn), true)
-				if goBack {
-					state.ClusterArn = ""
-					state.Service = ""
-					state.TaskArn = ""
-					state.Container = ""
-					step--
-					continue
+				step += next
+			case stepService:
+				next, err := pickService(ctx, c, awsCfg, state)
+				if err != nil {
+					return err
 				}
-				state.ClusterArn = clusterArns[selected]
-				cli.ClusterArn = state.ClusterArn
-				state.Service = ""
-				state.TaskArn = ""
-				state.Container = ""
-				step++
-			} else if step == stepService {
-				sp := createSpinner("Fetching ECS services...")
-				ecsClient := ecs.NewFromConfig(awsCfg)
-				cli.LogAWSCommand("ecs", "list-services", "--cluster", state.ClusterArn, "--profile", cli.Profile, "--region", cli.Region)
-				sp.Stop()
-				services, serviceArns := cli.ListServiceNamesArns(ctx, ecsClient, state.ClusterArn)
-				if len(services) == 0 {
-					fmt.Println("No ECS services found. Going back.")
-					state.Service = ""
-					state.TaskArn = ""
-					state.Container = ""
-					step--
-					continue
+				step += next
+			case stepTask:
+				next, err := pickTask(ctx, c, awsCfg, state)
+				if err != nil {
+					return err
 				}
-				selected, goBack := cli.PromptSelect("Choose ECS service", services, getKeyByValue(serviceArns, state.Service), true)
-				if goBack {
-					state.Service = ""
-					state.TaskArn = ""
-					state.Container = ""
-					step--
-					continue
+				step += next
+			case stepContainer:
+				next, err := pickContainer(ctx, c, awsCfg, state)
+				if err != nil {
+					return err
 				}
-				state.Service = serviceArns[selected]
-				cli.Service = state.Service
-				state.TaskArn = ""
-				state.Container = ""
-				step++
-			} else if step == stepTask {
-				sp := createSpinner("Fetching ECS tasks...")
-				ecsClient := ecs.NewFromConfig(awsCfg)
-				cli.LogAWSCommand("ecs", "list-tasks", "--cluster", state.ClusterArn, "--service-name", state.Service, "--profile", cli.Profile, "--region", cli.Region)
-				sp.Stop()
-				tasks, taskArns := cli.ListTaskNamesArns(ctx, ecsClient, state.ClusterArn, state.Service)
-				if len(tasks) == 0 {
-					fmt.Println("No ECS tasks found. Going back.")
-					state.TaskArn = ""
-					state.Container = ""
-					step--
-					continue
-				}
-				selected, goBack := cli.PromptSelect("Choose ECS task", tasks, getKeyByValue(taskArns, state.TaskArn), true)
-				if goBack {
-					state.TaskArn = ""
-					state.Container = ""
-					step--
-					continue
-				}
-				state.TaskArn = taskArns[selected]
-				cli.TaskArn = state.TaskArn
-				state.Container = ""
-				step++
-			} else if step == stepContainer {
-				sp := createSpinner("Fetching ECS containers...")
-				ecsClient := ecs.NewFromConfig(awsCfg)
-				cli.LogAWSCommand("ecs", "describe-tasks", "--cluster", state.ClusterArn, "--tasks", state.TaskArn, "--profile", cli.Profile, "--region", cli.Region)
-				sp.Stop()
-				containers := cli.ListContainerNames(ctx, ecsClient, state.ClusterArn, state.TaskArn)
-				if len(containers) == 0 {
-					fmt.Println("No containers found. Going back.")
-					state.Container = ""
-					step--
-					continue
-				}
-				selected, goBack := cli.PromptSelect("Choose a container", containers, state.Container, true)
-				if goBack {
-					state.Container = ""
-					step--
-					continue
-				}
-				state.Container = selected
-				cli.Container = state.Container
-				step++
+				step += next
 			}
 		}
 	}
+	return nil
+}
 
-	executeECSCommand(cli, state.ClusterArn, state.TaskArn, state.Container)
+func resetFrom(state *stepState, from int) {
+	if from <= stepRegion {
+		state.Region = ""
+	}
+	if from <= stepCluster {
+		state.ClusterArn = ""
+	}
+	if from <= stepService {
+		state.Service = ""
+	}
+	if from <= stepTask {
+		state.TaskArn = ""
+	}
+	if from <= stepContainer {
+		state.Container = ""
+	}
+}
+
+func pickCluster(ctx context.Context, c *cli.Cli, awsCfg aws.Config, state *stepState) (int, error) {
+	sp := createSpinner("Connecting to ECS...")
+	ecsClient := ecs.NewFromConfig(awsCfg)
+	c.LogAWSCommand("ecs", "list-clusters", "--profile", c.Profile, "--region", c.Region)
+	clusters, clusterArns, err := c.ListClusterNamesArns(ctx, ecsClient)
+	sp.Stop()
+	if err != nil {
+		fmt.Println("Failed to list ECS clusters:", err)
+		choice, goBack := c.PromptSelect("Cluster lookup failed. What now?",
+			[]string{"Retry", "Back"}, "Retry", true)
+		if goBack || choice == "Back" {
+			resetFrom(state, stepCluster)
+			return -1, nil
+		}
+		return 0, nil
+	}
+	if len(clusters) == 0 {
+		fmt.Println("No ECS clusters found in region:", c.Region)
+		choice, goBack := c.PromptSelect("No clusters found. What now?",
+			[]string{"Retry", "Back"}, "Retry", true)
+		if goBack || choice == "Back" {
+			resetFrom(state, stepCluster)
+			cli.ClearRegionCache(c.Profile)
+			return -1, nil
+		}
+		return 0, nil
+	}
+	selected, goBack := c.PromptSelect("Choose ECS cluster", clusters, getKeyByValue(clusterArns, state.ClusterArn), true)
+	if goBack {
+		resetFrom(state, stepCluster)
+		return -1, nil
+	}
+	state.ClusterArn = clusterArns[selected]
+	c.ClusterArn = state.ClusterArn
+	resetFrom(state, stepService)
+	return 1, nil
+}
+
+func pickService(ctx context.Context, c *cli.Cli, awsCfg aws.Config, state *stepState) (int, error) {
+	sp := createSpinner("Fetching ECS services...")
+	ecsClient := ecs.NewFromConfig(awsCfg)
+	c.LogAWSCommand("ecs", "list-services", "--cluster", state.ClusterArn, "--profile", c.Profile, "--region", c.Region)
+	services, serviceArns, err := c.ListServiceNamesArns(ctx, ecsClient, state.ClusterArn)
+	sp.Stop()
+	if err != nil {
+		fmt.Println("Failed to list ECS services:", err)
+		resetFrom(state, stepService)
+		return -1, nil
+	}
+	if len(services) == 0 {
+		fmt.Println("No ECS services found. Going back.")
+		resetFrom(state, stepService)
+		return -1, nil
+	}
+	selected, goBack := c.PromptSelect("Choose ECS service", services, getKeyByValue(serviceArns, state.Service), true)
+	if goBack {
+		resetFrom(state, stepService)
+		return -1, nil
+	}
+	state.Service = serviceArns[selected]
+	c.Service = state.Service
+	resetFrom(state, stepTask)
+	return 1, nil
+}
+
+func pickTask(ctx context.Context, c *cli.Cli, awsCfg aws.Config, state *stepState) (int, error) {
+	sp := createSpinner("Fetching ECS tasks...")
+	ecsClient := ecs.NewFromConfig(awsCfg)
+	c.LogAWSCommand("ecs", "list-tasks", "--cluster", state.ClusterArn, "--service-name", state.Service, "--profile", c.Profile, "--region", c.Region)
+	tasks, taskArns, err := c.ListTaskNamesArns(ctx, ecsClient, state.ClusterArn, state.Service)
+	sp.Stop()
+	if err != nil {
+		fmt.Println("Failed to list ECS tasks:", err)
+		resetFrom(state, stepTask)
+		return -1, nil
+	}
+	if len(tasks) == 0 {
+		fmt.Println("No ECS tasks found. Going back.")
+		resetFrom(state, stepTask)
+		return -1, nil
+	}
+	selected, goBack := c.PromptSelect("Choose ECS task", tasks, getKeyByValue(taskArns, state.TaskArn), true)
+	if goBack {
+		resetFrom(state, stepTask)
+		return -1, nil
+	}
+	state.TaskArn = taskArns[selected]
+	c.TaskArn = state.TaskArn
+	resetFrom(state, stepContainer)
+	return 1, nil
+}
+
+func pickContainer(ctx context.Context, c *cli.Cli, awsCfg aws.Config, state *stepState) (int, error) {
+	sp := createSpinner("Fetching ECS containers...")
+	ecsClient := ecs.NewFromConfig(awsCfg)
+	c.LogAWSCommand("ecs", "describe-tasks", "--cluster", state.ClusterArn, "--tasks", state.TaskArn, "--profile", c.Profile, "--region", c.Region)
+	containers, err := c.ListContainerNames(ctx, ecsClient, state.ClusterArn, state.TaskArn)
+	sp.Stop()
+	if err != nil {
+		fmt.Println("Failed to describe ECS task:", err)
+		resetFrom(state, stepContainer)
+		return -1, nil
+	}
+	if len(containers) == 0 {
+		fmt.Println("No containers found. Going back.")
+		resetFrom(state, stepContainer)
+		return -1, nil
+	}
+	selected, goBack := c.PromptSelect("Choose a container", containers, state.Container, true)
+	if goBack {
+		resetFrom(state, stepContainer)
+		return -1, nil
+	}
+	state.Container = selected
+	c.Container = state.Container
+	return 1, nil
+}
+
+func discoverRegions(ctx context.Context, c *cli.Cli) ([]string, error) {
+	sp := createSpinner("Discovering regions with ECS clusters...")
+	defer sp.Stop()
+	return cli.DiscoverRegionsWithClusters(ctx, c.Profile, cli.DefaultRegions)
 }
 
 func initializeCLI(ctx context.Context) *cli.Cli {
-	cli := cli.ParseArgs()
+	c := cli.ParseArgs()
+	_ = ctx
 	switch {
-	case cli.Version:
+	case c.Version:
 		fmt.Println("exec-ecs version", installer.Version)
 		os.Exit(0)
-	case cli.Upgrade:
+	case c.Upgrade:
 		installer.UpgradeExecECS()
 		os.Exit(0)
 	}
-	// Remove profile/region selection from here
-	return &cli
+	return &c
 }
 
-func loadAWSConfig(ctx context.Context, cli *cli.Cli) aws.Config {
+func loadAWSConfig(ctx context.Context, c *cli.Cli) (aws.Config, error) {
 	sp := createSpinner("Loading AWS configuration...")
 	defer sp.Stop()
 
-	cli.LogAWSCommand("configure", "get", "region", "--profile", cli.Profile)
+	c.LogAWSCommand("configure", "get", "region", "--profile", c.Profile)
 	cfg, err := config.LoadDefaultConfig(ctx,
-		config.WithRegion(cli.Region),
-		config.WithSharedConfigProfile(cli.Profile),
+		config.WithRegion(c.Region),
+		config.WithSharedConfigProfile(c.Profile),
 	)
 
 	if err != nil {
-		cli.LogUserFriendlyError("Unable to load AWS configuration", err, "Make sure your AWS credentials and configuration files are correctly set up.", "~/.aws/config", 37)
+		return aws.Config{}, fmt.Errorf("unable to load AWS configuration: %w", err)
 	}
 
-	return cfg
+	return cfg, nil
 }
 
-func validateSSOSession(ctx context.Context, cli *cli.Cli, awsCfg aws.Config) {
+// ensureSSOLogin logs into the SSO session up-front (before any per-region
+// operation) so that profiles bound to the same sso_session do not have to
+// re-authenticate for every region or account.
+func ensureSSOLogin(ctx context.Context, c *cli.Cli) error {
+	probeCfg, err := config.LoadDefaultConfig(ctx,
+		config.WithRegion(defaultProbeRegion(c)),
+		config.WithSharedConfigProfile(c.Profile),
+	)
+	if err != nil {
+		return fmt.Errorf("unable to load AWS configuration: %w", err)
+	}
+
+	stsClient := sts.NewFromConfig(probeCfg)
+	c.LogAWSCommand("sts", "get-caller-identity", "--profile", c.Profile)
+	if err := c.CheckSSOSession(ctx, stsClient, c.Profile); err == nil {
+		return nil
+	}
+
+	sso := c.LookupSSOSessionForProfile(c.Profile)
+	var args []string
+	if sso != "" {
+		fmt.Printf("No active SSO session found. Logging in to sso-session '%s' (covers all profiles bound to it)...\n", sso)
+		c.LogAWSCommand("sso", "login", "--sso-session", sso)
+		args = []string{"sso", "login", "--sso-session", sso}
+	} else {
+		fmt.Println("No active SSO session found. Initiating login...")
+		c.LogAWSCommand("sso", "login", "--profile", c.Profile)
+		args = []string{"sso", "login", "--profile", c.Profile}
+	}
+
+	cmd := exec.Command("aws", args...)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	cmd.Stdin = os.Stdin
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("aws sso login failed: %w", err)
+	}
+	return nil
+}
+
+func defaultProbeRegion(c *cli.Cli) string {
+	if c.Region != "" {
+		return c.Region
+	}
+	return "us-east-1"
+}
+
+func validateSSOSession(ctx context.Context, c *cli.Cli, awsCfg aws.Config) error {
 	sp := createSpinner("Checking AWS SSO session...")
 	defer sp.Stop()
 
 	stsClient := sts.NewFromConfig(awsCfg)
-	cli.LogAWSCommand("sts", "get-caller-identity", "--profile", cli.Profile)
-	if err := cli.CheckSSOSession(ctx, stsClient, cli.Profile); err != nil {
-		fmt.Println("No active SSO session found. Initiating login...")
-		cli.LogAWSCommand("sso", "login", "--profile", cli.Profile)
-		cmd := exec.Command("aws", "sso", "login", "--profile", cli.Profile)
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		if err := cmd.Run(); err != nil {
-			cli.LogUserFriendlyError("AWS SSO login failed", err, "Ensure you are authorized for SSO and that your credentials are valid.", "~/.aws/credentials", 45)
-		}
+	c.LogAWSCommand("sts", "get-caller-identity", "--profile", c.Profile)
+	if err := c.CheckSSOSession(ctx, stsClient, c.Profile); err != nil {
+		sp.Stop()
+		return ensureSSOLogin(ctx, c)
 	}
+	return nil
 }
 
-func selectCluster(ctx context.Context, cli *cli.Cli, awsCfg aws.Config) string {
-	sp := createSpinner("Connecting to ECS...")
-
-	ecsClient := ecs.NewFromConfig(awsCfg)
-	cli.LogAWSCommand("ecs", "list-clusters", "--profile", cli.Profile, "--region", cli.Region)
-	sp.Stop()
-
-	clusterArn, err := cli.SelectCluster(ctx, ecsClient)
-	if err != nil {
-		cli.LogUserFriendlyError("Error selecting cluster", err, "Verify that you have access to ECS clusters in the selected region.", "ECS Cluster configuration", 50)
-	}
-	return clusterArn
-}
-
-func selectService(ctx context.Context, cli *cli.Cli, awsCfg aws.Config, clusterArn string) string {
-	sp := createSpinner("Fetching ECS services...")
-
-	ecsClient := ecs.NewFromConfig(awsCfg)
-	cli.LogAWSCommand("ecs", "list-services", "--cluster", clusterArn, "--profile", cli.Profile, "--region", cli.Region)
-	sp.Stop()
-	serviceName, err := cli.SelectService(ctx, ecsClient, clusterArn)
-	if err != nil {
-		cli.LogUserFriendlyError("Error selecting service", err, "Ensure there are services running in the selected cluster.", "ECS Service configuration", 55)
-	}
-	return serviceName
-
-}
-
-func selectTask(ctx context.Context, cli *cli.Cli, awsCfg aws.Config, clusterArn, serviceName string) string {
-	sp := createSpinner("Fetching ECS tasks...")
-
-	ecsClient := ecs.NewFromConfig(awsCfg)
-	cli.LogAWSCommand("ecs", "list-tasks", "--cluster", clusterArn, "--service-name", serviceName, "--profile", cli.Profile, "--region", cli.Region)
-	sp.Stop()
-
-	taskArn, err := cli.SelectTask(ctx, ecsClient, clusterArn, serviceName)
-	if err != nil {
-		cli.LogUserFriendlyError("Error selecting task", err, "Ensure there are running tasks in the selected service.", "ECS Task configuration", 60)
-	}
-	return taskArn
-}
-
-func selectContainer(ctx context.Context, cli *cli.Cli, awsCfg aws.Config, clusterArn, taskArn string) string {
-	sp := createSpinner("Fetching ECS containers...")
-
-	ecsClient := ecs.NewFromConfig(awsCfg)
-	cli.LogAWSCommand("ecs", "describe-tasks", "--cluster", clusterArn, "--tasks", taskArn, "--profile", cli.Profile, "--region", cli.Region)
-	sp.Stop()
-
-	container, err := cli.SelectContainer(ctx, ecsClient, clusterArn, taskArn)
-	if err != nil {
-		cli.LogUserFriendlyError("Error selecting container", err, "Ensure the selected task has containers running.", "ECS Container configuration", 65)
-	}
-	return container
-}
-
-func executeECSCommand(cli *cli.Cli, clusterArn, taskArn string, container string) {
+func executeECSCommand(c *cli.Cli, clusterArn, taskArn string, container string) {
 	executeCmd := []string{
 		"ecs", "execute-command",
 		"--cluster", clusterArn,
 		"--task", taskArn,
 		"--container", container,
 		"--interactive",
-		"--command", cli.Command,
-		"--profile", cli.Profile,
-		"--region", cli.Region,
+		"--command", c.Command,
+		"--profile", c.Profile,
+		"--region", c.Region,
 	}
 
-	cli.LogAWSCommand(executeCmd[0], executeCmd[1:]...)
+	c.LogAWSCommand(executeCmd[0], executeCmd[1:]...)
 	cmd := exec.Command("aws", executeCmd...)
 
-	// Append to history
-	cli.AppendToHistory("aws " + strings.Join(executeCmd, " "))
+	c.AppendToHistory("aws " + strings.Join(executeCmd, " "))
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
-		cli.LogUserFriendlyError("Failed to start PTY session", err, "Ensure your system supports pseudo-terminals.", "PTY Setup", 67)
+		c.LogUserFriendlyError("Failed to start PTY session", err, "Ensure your system supports pseudo-terminals.", "PTY Setup", 67)
 	}
 	defer func() { _ = ptmx.Close() }()
 
@@ -393,14 +457,12 @@ func setupTerminalForPTY(ptmx *os.File) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// 1-byte buffer for stdin -> ptmx (lowest latency for keystrokes)
 	go func() {
 		buf := make([]byte, 1)
 		_, _ = io.CopyBuffer(ptmx, os.Stdin, buf)
 		wg.Done()
 	}()
 
-	// 1KB buffer for ptmx -> stdout (output can be buffered a bit more)
 	go func() {
 		buf := make([]byte, 1024)
 		_, _ = io.CopyBuffer(os.Stdout, ptmx, buf)
@@ -412,19 +474,18 @@ func setupTerminalForPTY(ptmx *os.File) {
 
 func createSpinner(suffix string) *spinner.Spinner {
 	sp := spinner.New(spinner.CharSets[38], 100*time.Millisecond)
-	sp.Start()
 	sp.Suffix = " " + suffix
+	sp.Start()
 	return sp
 }
 
-// Show history menu and execute selected command
-func showHistoryAndExecute(cli *cli.Cli) {
-	history := cli.GetLastUniqueHistory(5)
+func showHistoryAndExecute(c *cli.Cli) {
+	history := c.GetLastUniqueHistory(5)
 	if len(history) == 0 {
 		fmt.Println("No command history found.")
 		return
 	}
-	selected, err := cli.BubbleteaHistorySelect("Command History (last 5 unique)", history)
+	selected, err := c.BubbleteaHistorySelect("Command History (last 5 unique)", history)
 	if err != nil || selected == "" {
 		return
 	}
@@ -435,7 +496,6 @@ func showHistoryAndExecute(cli *cli.Cli) {
 	_ = cmd.Run()
 }
 
-// Helper to get key by value from map[string]string
 func getKeyByValue(m map[string]string, value string) string {
 	for k, v := range m {
 		if v == value {

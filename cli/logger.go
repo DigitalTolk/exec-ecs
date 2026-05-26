@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strings"
@@ -10,6 +11,13 @@ import (
 var cmdLogger = log.New(os.Stdout, "\n [AWS CMD] ", log.Ltime)
 var historyFile = os.Getenv("HOME") + "/.ecs_cli_history"
 
+// errorWriter and exitFn are package-level so tests can capture output without
+// actually exiting the process.
+var (
+	errorWriter io.Writer = os.Stdout
+	exitFn                = os.Exit
+)
+
 func (c *Cli) LogAWSCommand(cmd string, args ...string) {
 	if c.Debug {
 		cmdLogger.Printf("aws %s %s", cmd, strings.Join(args, " "))
@@ -17,18 +25,18 @@ func (c *Cli) LogAWSCommand(cmd string, args ...string) {
 }
 
 func (c *Cli) LogUserFriendlyError(message string, err error, potentialFix, filePath string, lineNumber int) {
-	fmt.Printf("\n============================\n")
-	fmt.Printf("\033[1;31mERROR: %s\033[0m\n", message)
-	fmt.Printf("Details: %v\n", err)
-	fmt.Printf("Potential Fix: \033[1;34m%s\033[0m\n", potentialFix)
+	fmt.Fprintf(errorWriter, "\n============================\n")
+	fmt.Fprintf(errorWriter, "\033[1;31mERROR: %s\033[0m\n", message)
+	fmt.Fprintf(errorWriter, "Details: %v\n", err)
+	fmt.Fprintf(errorWriter, "Potential Fix: \033[1;34m%s\033[0m\n", potentialFix)
 	if filePath != "" {
-		fmt.Printf("File Path: \033[1;32m%s\033[0m\n", filePath)
+		fmt.Fprintf(errorWriter, "File Path: \033[1;32m%s\033[0m\n", filePath)
 	}
 	if lineNumber > 0 {
-		fmt.Printf("Line Number: \033[1;36m%d\033[0m\n", lineNumber)
+		fmt.Fprintf(errorWriter, "Line Number: \033[1;36m%d\033[0m\n", lineNumber)
 	}
-	fmt.Printf("============================\n\n")
-	os.Exit(1)
+	fmt.Fprintf(errorWriter, "============================\n\n")
+	exitFn(1)
 }
 
 // Append a command to the history file

@@ -13,7 +13,8 @@ import (
 	"strings"
 )
 
-const Version = "v1.1.9"
+// Version is overridden at build time by goreleaser via -ldflags.
+var Version = "v1.1.9"
 
 func CheckAndInstallDependencies() {
 	dependencies := map[string]string{

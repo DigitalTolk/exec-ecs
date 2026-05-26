@@ -20,6 +20,8 @@ builds:
       - 386
       - arm
       - arm64
+    ldflags:
+      - -s -w -X ecs-tool/installer.Version=v{{ .Version }}
 
 archives:
   - format: tar.gz
