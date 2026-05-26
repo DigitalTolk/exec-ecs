@@ -9,7 +9,15 @@ permissions:
   contents: write
 
 jobs:
+  # Reuse the same definition the PR/main pipeline runs so we never ship a
+  # tag without first passing the full test + coverage gate.
+  test:
+    uses: ./.github/workflows/test.yml
+    permissions:
+      contents: read
+
   goreleaser:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,3 +38,4 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

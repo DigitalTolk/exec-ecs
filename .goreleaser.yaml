@@ -54,3 +54,31 @@ release:
     ---
 
     Released by [GoReleaser](https://github.com/goreleaser/goreleaser).
+
+# Automatically publish a Homebrew formula to DigitalTolk/homebrew-tools on
+# each tagged release. The action token (HOMEBREW_TAP_TOKEN) must be a PAT
+# with `contents: write` on the tap repository — the default GITHUB_TOKEN
+# cannot push to a different repo.
+brews:
+  - name: exec-ecs
+    repository:
+      owner: DigitalTolk
+      name: homebrew-tools
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+      pull_request:
+        enabled: true
+        draft: false
+    directory: Formula
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    commit_msg_template: "Brew formula update for {{ .ProjectName }} version {{ .Tag }}"
+    homepage: "https://github.com/DigitalTolk/exec-ecs"
+    description: "CLI that streamlines `aws ecs execute-command` against tasks across accounts and regions."
+    license: "MIT"
+    skip_upload: auto
+    install: |
+      bin.install "exec-ecs"
+    test: |
+      system "#{bin}/exec-ecs", "--version"

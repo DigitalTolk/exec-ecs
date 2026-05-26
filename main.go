@@ -9,8 +9,9 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
-	"sync"
+	"syscall"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -362,9 +363,11 @@ func loadAWSConfig(ctx context.Context, c *cli.Cli) (aws.Config, error) {
 	return cfg, nil
 }
 
-// ensureSSOLogin logs into the SSO session up-front (before any per-region
-// operation) so that profiles bound to the same sso_session do not have to
-// re-authenticate for every region or account.
+// ensureSSOLogin authenticates the user up-front so that all profiles bound
+// to the same sso-session piggy-back on a single login. When the profile is
+// SSO-based we drive the OAuth2 device-code flow natively (no `aws` CLI
+// process required); we fall back to `aws sso login --profile` only for
+// legacy non-sso-session setups.
 func ensureSSOLogin(ctx context.Context, c *cli.Cli) error {
 	probeCfg, err := config.LoadDefaultConfig(ctx,
 		config.WithRegion(defaultProbeRegion(c)),
@@ -380,19 +383,19 @@ func ensureSSOLogin(ctx context.Context, c *cli.Cli) error {
 		return nil
 	}
 
-	sso := c.LookupSSOSessionForProfile(c.Profile)
-	var args []string
-	if sso != "" {
-		fmt.Printf("No active SSO session found. Logging in to sso-session '%s' (covers all profiles bound to it)...\n", sso)
-		c.LogAWSCommand("sso", "login", "--sso-session", sso)
-		args = []string{"sso", "login", "--sso-session", sso}
-	} else {
-		fmt.Println("No active SSO session found. Initiating login...")
-		c.LogAWSCommand("sso", "login", "--profile", c.Profile)
-		args = []string{"sso", "login", "--profile", c.Profile}
+	ssoCfg, err := c.LookupSSOSessionConfig(c.Profile)
+	if err != nil {
+		return err
+	}
+	if ssoCfg != nil {
+		fmt.Printf("No active SSO session found. Logging in to sso-session %q (covers every profile bound to it)...\n", ssoCfg.Name)
+		c.LogAWSCommand("[native]", "sso", "login", "--sso-session", ssoCfg.Name)
+		return c.PerformNativeSSOLogin(ctx, ssoCfg)
 	}
 
-	cmd := exec.Command("aws", args...)
+	fmt.Println("No sso-session block found for this profile. Falling back to `aws sso login --profile`.")
+	c.LogAWSCommand("sso", "login", "--profile", c.Profile)
+	cmd := exec.Command("aws", "sso", "login", "--profile", c.Profile)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	cmd.Stdin = os.Stdin
 	if err := cmd.Run(); err != nil {
@@ -440,36 +443,102 @@ func executeECSCommand(c *cli.Cli, clusterArn, taskArn string, container string)
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
-		c.LogUserFriendlyError("Failed to start PTY session", err, "Ensure your system supports pseudo-terminals.", "PTY Setup", 67)
+		// Print a helpful error and bail out — DO NOT continue into setup
+		// with a nil ptmx (the previous code did that and would nil-deref
+		// the moment LogUserFriendlyError's exit was stubbed in tests).
+		fmt.Fprintf(os.Stderr, "Failed to start PTY session: %v\n", err)
+		os.Exit(1)
 	}
 	defer func() { _ = ptmx.Close() }()
 
-	setupTerminalForPTY(ptmx)
+	// Forward SIGWINCH so the inner shell sees terminal resizes.
+	resizeCh := make(chan os.Signal, 1)
+	signal.Notify(resizeCh, syscall.SIGWINCH)
+	defer signal.Stop(resizeCh)
+	go func() {
+		for range resizeCh {
+			_ = pty.InheritSize(os.Stdin, ptmx)
+		}
+	}()
+	resizeCh <- syscall.SIGWINCH // prime once so PTY matches our size
+
+	// Restore the terminal state even if a fatal signal lands while we're
+	// in raw mode. Without this, Ctrl-C during the session leaves the
+	// user's shell in raw mode with no echo.
+	exitCode := setupTerminalForPTY(ptmx, cmd)
+	os.Exit(exitCode)
 }
 
-func setupTerminalForPTY(ptmx *os.File) {
+// setupTerminalForPTY puts the controlling TTY into raw mode, copies bytes
+// between the PTY and stdio, and waits for the child to exit. Returns the
+// child's exit code (or 1 on copy failure) so the caller can mirror it.
+func setupTerminalForPTY(ptmx *os.File, cmd *exec.Cmd) int {
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
-		log.Fatalf("[ERROR] Failed to set terminal to raw mode: %v", err)
+		log.Printf("[ERROR] Failed to set terminal to raw mode: %v", err)
+		_ = cmd.Wait()
+		return 1
 	}
-	defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }()
+	restore := func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }
 
-	var wg sync.WaitGroup
-	wg.Add(2)
+	// Catch fatal signals so we restore the terminal before the OS kills us.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	go func() {
+		s, ok := <-sigCh
+		if !ok {
+			return
+		}
+		restore()
+		// Forward the signal to the child so `aws` cleans up.
+		if cmd.Process != nil {
+			_ = cmd.Process.Signal(s)
+		}
+	}()
+	defer signal.Stop(sigCh)
+	defer restore()
 
+	// Output goroutine: when the PTY EOFs (child exited), copy returns and
+	// we tear down stdin too so wg.Wait() can finish without waiting for
+	// the user to hit Ctrl-D.
+	done := make(chan struct{})
+	go func() {
+		buf := make([]byte, 4096)
+		_, _ = io.CopyBuffer(os.Stdout, ptmx, buf)
+		close(done)
+	}()
+
+	// Input goroutine: relays stdin to the PTY; exits when stdin closes or
+	// the output goroutine signals that the child is gone.
 	go func() {
 		buf := make([]byte, 1)
-		_, _ = io.CopyBuffer(ptmx, os.Stdin, buf)
-		wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			n, err := os.Stdin.Read(buf)
+			if n > 0 {
+				if _, werr := ptmx.Write(buf[:n]); werr != nil {
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
 	}()
 
-	go func() {
-		buf := make([]byte, 1024)
-		_, _ = io.CopyBuffer(os.Stdout, ptmx, buf)
-		wg.Done()
-	}()
+	<-done
 
-	wg.Wait()
+	if err := cmd.Wait(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return exitErr.ExitCode()
+		}
+		return 1
+	}
+	return 0
 }
 
 func createSpinner(suffix string) *spinner.Spinner {

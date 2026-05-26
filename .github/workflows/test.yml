@@ -1,6 +1,7 @@
 name: test
 
 on:
+  workflow_call:
   push:
     branches: [main]
   pull_request:
@@ -56,6 +57,13 @@ jobs:
           echo "total coverage: ${total}%  (min ${MIN_TOTAL_COVERAGE}%)"
           awk -v c="$cli" -v m="$MIN_CLI_COVERAGE" 'BEGIN { if (c+0 < m+0) { printf("cli coverage %s%% < required %s%%\n", c, m); exit 1 } }'
           awk -v t="$total" -v m="$MIN_TOTAL_COVERAGE" 'BEGIN { if (t+0 < m+0) { printf("total coverage %s%% < required %s%%\n", t, m); exit 1 } }'
+
+      - name: Upload coverage to Coveralls
+        uses: coverallsapp/github-action@v2
+        with:
+          file: coverage.out
+          format: golang
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload coverage artefact
         if: always()

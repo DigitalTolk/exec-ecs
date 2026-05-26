@@ -5,11 +5,12 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
 var cmdLogger = log.New(os.Stdout, "\n [AWS CMD] ", log.Ltime)
-var historyFile = os.Getenv("HOME") + "/.ecs_cli_history"
+var historyFile = filepath.Join(homeDir(), ".ecs_cli_history")
 
 // errorWriter and exitFn are package-level so tests can capture output without
 // actually exiting the process.

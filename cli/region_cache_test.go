@@ -16,7 +16,7 @@ func setRegionCacheFile(t *testing.T) string {
 	t.Helper()
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "region_cache.json")
-	t.Setenv("ECS_TOOL_REGION_CACHE_PATH", path)
+	t.Setenv("EXEC_ECS_REGION_CACHE_PATH", path)
 	return path
 }
 
@@ -144,8 +144,8 @@ func TestDiscoverRegionsEmpty(t *testing.T) {
 func TestRegionCachePathDefault(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
-	t.Setenv("ECS_TOOL_REGION_CACHE_PATH", "")
-	want := filepath.Join(tmp, ".ecs_cli_region_cache.json")
+	t.Setenv("EXEC_ECS_REGION_CACHE_PATH", "")
+	want := filepath.Join(tmp, ".exec-ecs-region-cache.json")
 	if got := regionCachePath(); got != want {
 		t.Fatalf("default path = %q want %q", got, want)
 	}

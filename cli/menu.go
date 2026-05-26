@@ -134,7 +134,34 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		switch msg.String() {
+		key := msg.String()
+
+		// While the filter input is focused we must let `q`, `/`, etc. flow
+		// into the textinput as ordinary characters. Only ctrl+c, esc and
+		// enter retain their menu semantics inside the filter.
+		if m.filterMode {
+			switch key {
+			case "ctrl+c":
+				if m.isThemeSelection && m.originalTheme != nil {
+					CurrentTheme = m.originalTheme
+				}
+				m.quitting = true
+				return m, tea.Quit
+			case "esc":
+				m.filterMode = false
+				m.textInput.Blur()
+				return m, nil
+			case "enter":
+				m.filterMode = false
+				m.textInput.Blur()
+				return m, nil
+			}
+			m.textInput, cmd = m.textInput.Update(msg)
+			m.filterItems(m.textInput.Value())
+			return m, cmd
+		}
+
+		switch key {
 		case "ctrl+c", "q":
 			// Restore previewed-but-not-applied theme on hard quit so the
 			// user doesn't end up stuck with a temp theme they were only
@@ -146,18 +173,11 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case "/":
-			if !m.filterMode {
-				m.filterMode = true
-				m.textInput.Focus()
-				return m, textinput.Blink
-			}
+			m.filterMode = true
+			m.textInput.Focus()
+			return m, textinput.Blink
 
 		case "esc":
-			if m.filterMode {
-				m.filterMode = false
-				m.textInput.Blur()
-				return m, nil
-			}
 			// If this is theme selection and user hits esc, restore original theme
 			if m.isThemeSelection && m.originalTheme != nil {
 				CurrentTheme = m.originalTheme
@@ -289,12 +309,7 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.filterMode {
-		m.textInput, cmd = m.textInput.Update(msg)
-		m.filterItems(m.textInput.Value())
-		return m, cmd
-	}
-
+	_ = cmd
 	return m, nil
 }
 

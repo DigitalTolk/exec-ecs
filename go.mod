@@ -1,9 +1,10 @@
 module ecs-tool
 
-go 1.25.0
+go 1.26.3
 
 require (
 	github.com/aws/aws-sdk-go-v2/service/ecs v1.80.0
+	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.36.0
 	github.com/charmbracelet/lipgloss v1.1.0
 )
 
@@ -16,7 +17,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.23 // indirect
 	github.com/aws/aws-sdk-go-v2/service/signin v1.0.11 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.30.17 // indirect
-	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.36.0 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
 	github.com/charmbracelet/x/ansi v0.11.7 // indirect

@@ -47,10 +47,10 @@ type regionCacheFile struct {
 
 // regionCachePath returns the cache file path. Overridable via env for tests.
 func regionCachePath() string {
-	if v := os.Getenv("ECS_TOOL_REGION_CACHE_PATH"); v != "" {
+	if v := os.Getenv("EXEC_ECS_REGION_CACHE_PATH"); v != "" {
 		return v
 	}
-	return filepath.Join(os.Getenv("HOME"), ".ecs_cli_region_cache.json")
+	return filepath.Join(homeDir(), ".exec-ecs-region-cache.json")
 }
 
 func loadRegionCache() *regionCacheFile {
@@ -71,10 +71,32 @@ func saveRegionCache(cache *regionCacheFile) error {
 		return err
 	}
 	path := regionCachePath()
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0600)
+	// Write to a tempfile in the same directory and rename into place so
+	// concurrent invocations cannot read a half-written file, and an
+	// interrupted write cannot leave behind a corrupt cache.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".region-cache-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 // LookupCachedRegions returns the cached regions for a profile if still valid.
@@ -131,6 +153,10 @@ func defaultRegionProber(ctx context.Context, profile, region string) (bool, err
 // DiscoverRegionsWithClusters probes the candidate regions in parallel and
 // returns those that hold at least one ECS cluster. The result is cached for
 // RegionCacheTTL.
+//
+// Concurrency is bounded to 8 outstanding probes, acquired *before* the
+// goroutine starts so we don't eagerly build 27 AWS clients and 27 outstanding
+// requests on a slow connection. Context cancellation is honoured promptly.
 func DiscoverRegionsWithClusters(ctx context.Context, profile string, candidates []string) ([]string, error) {
 	if cached, ok := LookupCachedRegions(profile); ok {
 		return cached, nil
@@ -146,11 +172,25 @@ func DiscoverRegionsWithClusters(ctx context.Context, profile string, candidates
 
 	sem := make(chan struct{}, 8)
 	for _, region := range candidates {
+		// Acquire the slot first so we never have more than `cap(sem)` goroutines
+		// in flight at once. Honour cancellation here so a Ctrl-C aborts the
+		// remaining queue without spinning up more work.
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			wg.Wait()
+			return nil, ctx.Err()
+		}
+
 		wg.Add(1)
 		go func(r string) {
 			defer wg.Done()
-			sem <- struct{}{}
 			defer func() { <-sem }()
+
+			// Re-check before doing work in case we were cancelled while queued.
+			if ctx.Err() != nil {
+				return
+			}
 
 			has, err := regionProber(ctx, profile, r)
 			mu.Lock()
@@ -167,6 +207,9 @@ func DiscoverRegionsWithClusters(ctx context.Context, profile string, candidates
 	}
 	wg.Wait()
 
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if len(found) == 0 && errCount == len(candidates) && lastErr != nil {
 		return nil, errors.New("unable to probe any region: " + lastErr.Error())
 	}

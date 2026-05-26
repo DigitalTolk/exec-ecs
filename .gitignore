@@ -1,3 +1,7 @@
 # Added by goreleaser init:
 dist/
 .env
+
+# Local Makefile build output
+bin/
+coverage.out

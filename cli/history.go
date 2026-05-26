@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -44,7 +45,7 @@ func BubbleteaHistorySelect(label string, items []string) (string, error) {
 		}
 		mm := im.menu
 		if mm.choice == clearHistoryOption {
-			historyFile := os.Getenv("HOME") + "/.ecs_cli_history"
+			historyFile := filepath.Join(homeDir(), ".ecs_cli_history")
 			_ = os.Remove(historyFile)
 			fmt.Println("History cleared.")
 			allItems = []string{clearHistoryOption}

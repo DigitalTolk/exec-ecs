@@ -3,8 +3,9 @@ package cli
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
-	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
@@ -87,7 +88,7 @@ func (c *Cli) BubbleteaHistorySelect(label string, items []string) (string, erro
 func (c *Cli) SelectProfileList() []string {
 	awsConfigPath := c.getStoredConfigPath()
 	if awsConfigPath == "" {
-		awsConfigPath = os.Getenv("HOME") + "/.aws/config"
+		awsConfigPath = filepath.Join(homeDir(), ".aws", "config")
 	}
 	cfg, err := ini.Load(awsConfigPath)
 	if err != nil {
@@ -177,7 +178,10 @@ func arnMap(arns []string) map[string]string {
 	return out
 }
 
-// Update PromptSelect to match new signature
+// PromptSelect runs the interactive picker. An empty selection means the
+// user quit with q/ctrl+c/esc and is treated as a clean exit (caller's
+// responsibility to decide what to do); a non-nil error is fatal because it
+// means the bubbletea program itself failed to run.
 func (c *Cli) PromptSelect(label string, items []string, defaultSelected string, showGoBack bool) (string, bool) {
 	selectedItem, goBack, err := bubbleteaSelect(label, items, defaultSelected, showGoBack)
 	if err != nil {
@@ -187,7 +191,10 @@ func (c *Cli) PromptSelect(label string, items []string, defaultSelected string,
 		return "", true
 	}
 	if selectedItem == "" {
-		log.Fatalf("No selection made, exiting.")
+		// User explicitly quit — exit silently with status 0 rather than
+		// dumping a stack trace via log.Fatalf.
+		fmt.Println("Cancelled.")
+		exitFn(0)
 	}
 	return selectedItem, false
 }

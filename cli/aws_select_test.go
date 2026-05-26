@@ -286,49 +286,6 @@ func TestCliListContainerNames(t *testing.T) {
 	}
 }
 
-func TestLookupSSOSessionForProfile(t *testing.T) {
-	tmp := t.TempDir()
-	cfgPath := filepath.Join(tmp, "config")
-	body := `
-[profile foo]
-sso_session = main
-sso_account_id = 1
-sso_role_name = R
-region = us-east-1
-
-[profile bar]
-region = eu-west-1
-
-[sso-session main]
-sso_start_url = https://example.awsapps.com/start
-sso_region = us-east-1
-`
-	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	customPathFile := filepath.Join(tmp, "custom_path")
-	t.Setenv("HOME", tmp)
-	if err := os.MkdirAll(filepath.Join(tmp, ".aws"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(tmp, ".aws", "custom_config_path"), []byte(cfgPath), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_ = customPathFile
-
-	c := &Cli{}
-	if got := c.LookupSSOSessionForProfile("foo"); got != "main" {
-		t.Fatalf("foo sso = %q want main", got)
-	}
-	if got := c.LookupSSOSessionForProfile("bar"); got != "" {
-		t.Fatalf("bar sso = %q want empty", got)
-	}
-	if got := c.LookupSSOSessionForProfile("missing"); got != "" {
-		t.Fatalf("missing sso = %q want empty", got)
-	}
-}
-
 func TestAWSConfigPathFallback(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
