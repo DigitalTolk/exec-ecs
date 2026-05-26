@@ -13,27 +13,40 @@ import (
 	"strings"
 )
 
-const Version = "v1.1.9"
+// Version is overridden at build time by goreleaser via -ldflags.
+var Version = "v1.1.9"
 
 func CheckAndInstallDependencies() {
-	dependencies := map[string]string{
-		"aws":                    "AWS CLI is required. Please install it from https://aws.amazon.com/cli/",
-		"session-manager-plugin": "AWS Session Manager Plugin is required. Please install it from https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html",
-	}
-
-	for command, message := range dependencies {
-		if !isCommandAvailable(command) {
-			fmt.Printf("%s is not installed.\n%s\n", command, message)
-			fmt.Print("Would you like to install it now? (y/n): ")
-
-			var response string
-			fmt.Scanln(&response)
-			if response == "y" || response == "Y" {
-				InstallCommand(command)
-			} else {
-				log.Fatalf("%s is required to run this application. Exiting.", command)
-			}
+	// Slice ordering is stable: when both deps are missing, the user always
+	// sees prompts in the same order. With a map this order was randomised.
+	dependencies := runtimeDependencies()
+	for _, dep := range dependencies {
+		if isCommandAvailable(dep.command) {
+			continue
 		}
+		fmt.Printf("%s is not installed.\n%s\n", dep.command, dep.message)
+		fmt.Print("Would you like to install it now? (y/n): ")
+
+		var response string
+		// Treat EOF / no-TTY as a "no" without spamming an error: in CI we
+		// just exit with a clear message about the missing dep.
+		_, _ = fmt.Scanln(&response)
+		if response == "y" || response == "Y" {
+			InstallCommand(dep.command)
+		} else {
+			log.Fatalf("%s is required to run this application. Exiting.", dep.command)
+		}
+	}
+}
+
+type dependency struct {
+	command string
+	message string
+}
+
+func runtimeDependencies() []dependency {
+	return []dependency{
+		{"session-manager-plugin", "AWS Session Manager Plugin is required. Please install it from https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html"},
 	}
 }
 
@@ -267,7 +280,15 @@ func extractAndInstall(filePath, originalFilename string) {
 		log.Fatalf("Failed to read binary: %v", err)
 	}
 
-	if err := os.WriteFile(destPath, input, 0755); err != nil {
+	// Write to a sibling file first, then atomically rename into place. This
+	// avoids truncating the running binary on Linux and prevents leaving the
+	// install partially overwritten if the process is interrupted mid-write.
+	stagingPath := destPath + ".new"
+	if err := os.WriteFile(stagingPath, input, 0o755); err != nil {
+		log.Fatalf("Failed to write staging binary to %s: %v", stagingPath, err)
+	}
+	if err := os.Rename(stagingPath, destPath); err != nil {
+		_ = os.Remove(stagingPath)
 		log.Fatalf("Failed to install binary to %s: %v", destPath, err)
 	}
 

@@ -1,0 +1,36 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 10
+    groups:
+      aws-sdk:
+        patterns:
+          - "github.com/aws/*"
+      charmbracelet:
+        patterns:
+          - "github.com/charmbracelet/*"
+          - "github.com/muesli/*"
+      golang-x:
+        patterns:
+          - "golang.org/x/*"
+      go-modules:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "github.com/aws/*"
+          - "github.com/charmbracelet/*"
+          - "github.com/muesli/*"
+          - "golang.org/x/*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"

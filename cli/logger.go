@@ -2,13 +2,24 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strings"
 )
 
 var cmdLogger = log.New(os.Stdout, "\n [AWS CMD] ", log.Ltime)
-var historyFile = os.Getenv("HOME") + "/.ecs_cli_history"
+// historyFile is a `var` so tests can rebind it. In normal runs it always
+// resolves to the standard config dir; we only fall back to legacy paths via
+// migrateLegacyPaths() at startup.
+var historyFile = historyPath()
+
+// errorWriter and exitFn are package-level so tests can capture output without
+// actually exiting the process.
+var (
+	errorWriter io.Writer = os.Stdout
+	exitFn                = os.Exit
+)
 
 func (c *Cli) LogAWSCommand(cmd string, args ...string) {
 	if c.Debug {
@@ -17,28 +28,29 @@ func (c *Cli) LogAWSCommand(cmd string, args ...string) {
 }
 
 func (c *Cli) LogUserFriendlyError(message string, err error, potentialFix, filePath string, lineNumber int) {
-	fmt.Printf("\n============================\n")
-	fmt.Printf("\033[1;31mERROR: %s\033[0m\n", message)
-	fmt.Printf("Details: %v\n", err)
-	fmt.Printf("Potential Fix: \033[1;34m%s\033[0m\n", potentialFix)
+	fmt.Fprintf(errorWriter, "\n============================\n")
+	fmt.Fprintf(errorWriter, "\033[1;31mERROR: %s\033[0m\n", message)
+	fmt.Fprintf(errorWriter, "Details: %v\n", err)
+	fmt.Fprintf(errorWriter, "Potential Fix: \033[1;34m%s\033[0m\n", potentialFix)
 	if filePath != "" {
-		fmt.Printf("File Path: \033[1;32m%s\033[0m\n", filePath)
+		fmt.Fprintf(errorWriter, "File Path: \033[1;32m%s\033[0m\n", filePath)
 	}
 	if lineNumber > 0 {
-		fmt.Printf("Line Number: \033[1;36m%d\033[0m\n", lineNumber)
+		fmt.Fprintf(errorWriter, "Line Number: \033[1;36m%d\033[0m\n", lineNumber)
 	}
-	fmt.Printf("============================\n\n")
-	os.Exit(1)
+	fmt.Fprintf(errorWriter, "============================\n\n")
+	exitFn(1)
 }
 
 // Append a command to the history file
 func AppendToHistory(cmd string) {
-	f, err := os.OpenFile(historyFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	_ = EnsureConfigDir()
+	f, err := os.OpenFile(historyFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return // fail silently
 	}
 	defer f.Close()
-	f.WriteString(cmd + "\n")
+	_, _ = f.WriteString(cmd + "\n")
 }
 
 // Get the last 5 unique commands from history, most recent first
