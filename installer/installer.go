@@ -129,7 +129,10 @@ func UpgradeExecECS() {
 	}
 
 	fmt.Printf("New version available: %s. Upgrading...\n", release.TagName)
-	binaryName := getBinaryName()
+	binaryName, ok := getBinaryName()
+	if !ok {
+		log.Fatalf("No suitable binary found for your platform.")
+	}
 
 	var downloadURL string
 	for _, asset := range release.Assets {
@@ -147,10 +150,13 @@ func UpgradeExecECS() {
 	fmt.Printf("Successfully upgraded to version %s\n", release.TagName)
 }
 
-func getBinaryName() string {
+func getBinaryName() (string, bool) {
 	platform := runtime.GOOS
 	arch := runtime.GOARCH
+	return binaryNameFor(platform, arch)
+}
 
+func binaryNameFor(platform, arch string) (string, bool) {
 	switch platform {
 	case "darwin":
 		platform = "Darwin"
@@ -158,6 +164,8 @@ func getBinaryName() string {
 		platform = "Linux"
 	case "windows":
 		platform = "Windows"
+	default:
+		return "", false
 	}
 
 	switch arch {
@@ -165,10 +173,8 @@ func getBinaryName() string {
 		arch = "x86_64"
 	case "arm64":
 		arch = "arm64"
-	case "arm":
-		arch = "armv6"
-	case "386":
-		arch = "i386"
+	default:
+		return "", false
 	}
 
 	ext := "tar.gz"
@@ -176,7 +182,7 @@ func getBinaryName() string {
 		ext = "zip"
 	}
 
-	return fmt.Sprintf("exec-ecs_%s_%s.%s", platform, arch, ext)
+	return fmt.Sprintf("exec-ecs_%s_%s.%s", platform, arch, ext), true
 }
 
 func downloadAndInstall(url string) {

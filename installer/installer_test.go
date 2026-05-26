@@ -8,7 +8,10 @@ import (
 
 func TestGetBinaryName(t *testing.T) {
 	t.Parallel()
-	name := getBinaryName()
+	name, ok := getBinaryName()
+	if !ok {
+		t.Fatalf("current platform should be supported: %s/%s", runtime.GOOS, runtime.GOARCH)
+	}
 	if !strings.HasPrefix(name, "exec-ecs_") {
 		t.Fatalf("unexpected prefix: %s", name)
 	}
@@ -33,6 +36,45 @@ func TestGetBinaryName(t *testing.T) {
 	} else {
 		if !strings.HasSuffix(name, ".tar.gz") {
 			t.Fatalf("expected .tar.gz suffix: %s", name)
+		}
+	}
+}
+
+func TestBinaryNameForSupportedArchitectures(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		goos string
+		arch string
+		want string
+	}{
+		"linux amd64":   {"linux", "amd64", "exec-ecs_Linux_x86_64.tar.gz"},
+		"linux arm64":   {"linux", "arm64", "exec-ecs_Linux_arm64.tar.gz"},
+		"darwin amd64":  {"darwin", "amd64", "exec-ecs_Darwin_x86_64.tar.gz"},
+		"darwin arm64":  {"darwin", "arm64", "exec-ecs_Darwin_arm64.tar.gz"},
+		"windows amd64": {"windows", "amd64", "exec-ecs_Windows_x86_64.zip"},
+		"windows arm64": {"windows", "arm64", "exec-ecs_Windows_arm64.zip"},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, ok := binaryNameFor(tc.goos, tc.arch)
+			if !ok {
+				t.Fatal("expected architecture to be supported")
+			}
+			if got != tc.want {
+				t.Fatalf("binaryNameFor() = %q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBinaryNameForDeprecatedArchitectures(t *testing.T) {
+	t.Parallel()
+
+	for _, arch := range []string{"386", "arm"} {
+		if got, ok := binaryNameFor("linux", arch); ok {
+			t.Fatalf("deprecated architecture %s should not be supported, got %q", arch, got)
 		}
 	}
 }
