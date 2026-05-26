@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"flag"
-	"fmt"
 	"log"
 	"path/filepath"
 	"strings"
@@ -202,7 +201,6 @@ func (c *Cli) PromptSelect(label string, items []string, defaultSelected string,
 	if selectedItem == "" {
 		// User explicitly quit — exit silently with status 0 rather than
 		// dumping a stack trace via log.Fatalf.
-		fmt.Println("Cancelled.")
 		exitFn(0)
 	}
 	return selectedItem, false

@@ -18,12 +18,8 @@ var Version = "v1.1.9"
 
 func CheckAndInstallDependencies() {
 	// Slice ordering is stable: when both deps are missing, the user always
-	// sees `aws` prompted first. With a map this order was randomised.
-	dependencies := []struct{ command, message string }{
-		{"aws", "AWS CLI is required. Please install it from https://aws.amazon.com/cli/"},
-		{"session-manager-plugin", "AWS Session Manager Plugin is required. Please install it from https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html"},
-	}
-
+	// sees prompts in the same order. With a map this order was randomised.
+	dependencies := runtimeDependencies()
 	for _, dep := range dependencies {
 		if isCommandAvailable(dep.command) {
 			continue
@@ -40,6 +36,17 @@ func CheckAndInstallDependencies() {
 		} else {
 			log.Fatalf("%s is required to run this application. Exiting.", dep.command)
 		}
+	}
+}
+
+type dependency struct {
+	command string
+	message string
+}
+
+func runtimeDependencies() []dependency {
+	return []dependency{
+		{"session-manager-plugin", "AWS Session Manager Plugin is required. Please install it from https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html"},
 	}
 }
 

@@ -16,6 +16,33 @@ func TestConfigDirOverride(t *testing.T) {
 	}
 }
 
+func TestConfigDirHonoursXDG(t *testing.T) {
+	prev := configDirOverride
+	configDirOverride = ""
+	t.Cleanup(func() { configDirOverride = prev })
+
+	t.Setenv("XDG_CONFIG_HOME", "/tmp/xdg-test")
+	if got := ConfigDir(); got != "/tmp/xdg-test/exec-ecs" {
+		t.Fatalf("XDG override ignored: got %s", got)
+	}
+}
+
+func TestConfigDirFallsBackToDotConfig(t *testing.T) {
+	prev := configDirOverride
+	configDirOverride = ""
+	t.Cleanup(func() { configDirOverride = prev })
+
+	// Unset XDG; default should be ~/.config/exec-ecs on every platform
+	// (incl. macOS / Windows — we deliberately deviate from os.UserConfigDir).
+	t.Setenv("XDG_CONFIG_HOME", "")
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	want := tmp + "/.config/exec-ecs"
+	if got := ConfigDir(); got != want {
+		t.Fatalf("default config dir = %q want %q", got, want)
+	}
+}
+
 func TestEnsureConfigDirCreates(t *testing.T) {
 	tmp := t.TempDir()
 	prev := configDirOverride
@@ -89,5 +116,35 @@ func TestMigrateLegacyPathsKeepsExistingTarget(t *testing.T) {
 	}
 	if string(data) != "current" {
 		t.Fatalf("expected current preserved, got %q", string(data))
+	}
+}
+
+func TestMigrateLegacyPathsIgnoresNativeConfigTheme(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg := t.TempDir()
+	prev := configDirOverride
+	configDirOverride = cfg
+	t.Cleanup(func() { configDirOverride = prev })
+
+	nativeTheme := filepath.Join(home, "Library", "Application Support", "exec-ecs", "theme")
+	if err := os.MkdirAll(filepath.Dir(nativeTheme), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(nativeTheme, []byte("native"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	migrateLegacyPaths()
+
+	if _, err := os.Stat(filepath.Join(cfg, "theme")); !os.IsNotExist(err) {
+		t.Fatalf("native config theme should not be migrated, stat err=%v", err)
+	}
+	data, err := os.ReadFile(nativeTheme)
+	if err != nil {
+		t.Fatalf("native theme should remain untouched: %v", err)
+	}
+	if string(data) != "native" {
+		t.Fatalf("native theme contents = %q", string(data))
 	}
 }

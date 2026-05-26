@@ -41,6 +41,12 @@ func TestRegionCacheRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRegionCacheDefaultTTL(t *testing.T) {
+	if RegionCacheTTL != 15*time.Minute {
+		t.Fatalf("RegionCacheTTL = %v, want 15m", RegionCacheTTL)
+	}
+}
+
 func TestRegionCacheExpires(t *testing.T) {
 	setRegionCacheFile(t)
 	prev := RegionCacheTTL
@@ -164,7 +170,7 @@ func TestDefaultRegionProberFailsWithoutCreds(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		baseAWSConfigForProbe = prev
-		probeBaseConfig = &probeConfigCache{} // reset shared state
+		activeProbeCache = nil // reset shared sweep state
 	})
 
 	if _, err := defaultRegionProber(context.Background(), "no-such-profile", "us-east-1"); err == nil {
@@ -215,4 +221,3 @@ func TestProbeConfigCacheGetSet(t *testing.T) {
 		t.Fatalf("expected 2 calls after profile switch, got %d", calls)
 	}
 }
-

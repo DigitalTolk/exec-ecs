@@ -34,7 +34,7 @@ var DefaultRegions = []string{
 
 // RegionCacheTTL is how long discovered regions remain valid before we
 // re-probe. Exposed as a var so tests can shorten it.
-var RegionCacheTTL = 5 * time.Minute
+var RegionCacheTTL = 15 * time.Minute
 
 type regionCacheEntry struct {
 	Regions   []string  `json:"regions"`
@@ -143,19 +143,26 @@ var probeConcurrency = 12
 // per discovery sweep. We then clone it per-region instead of re-parsing the
 // config (and re-touching the SSO token cache) on every probe.
 //
+// IMPORTANT: we use WithDefaultRegion, not WithRegion. WithRegion would
+// override sso_region (and any explicit profile region) which can re-route
+// the SSO portal call to the wrong endpoint, producing a confusing
+// "ForbiddenException: No access" from GetRoleCredentials.
+// WithDefaultRegion only kicks in when no other region source provides one.
+//
 // Exposed as a var for tests.
 var baseAWSConfigForProbe = func(ctx context.Context, profile string) (aws.Config, error) {
 	return config.LoadDefaultConfig(ctx,
 		config.WithSharedConfigProfile(profile),
-		// Region is set per probe; we use a placeholder so config-load
-		// doesn't bail when the profile omits a default region.
-		config.WithRegion("us-east-1"),
+		config.WithDefaultRegion("us-east-1"),
 	)
 }
 
-// probeBaseConfig is a per-sweep cache of the loaded AWS config. Without this
-// every region probe re-parses ~/.aws/config from disk, multiplying total
-// discovery time by N.
+// probeBaseConfig caches the loaded aws.Config across a single discovery
+// sweep so we don't re-parse ~/.aws/config on every probe. We only ever load
+// it ONCE per DiscoverRegionsWithClusters invocation — never reuse it across
+// invocations — because the credential providers inside aws.Config can hold
+// per-invocation state (e.g. memoised "credentials not found" failures from
+// before the user logged in).
 type probeConfigCache struct {
 	mu      sync.Mutex
 	cfg     aws.Config
@@ -163,7 +170,7 @@ type probeConfigCache struct {
 	loaded  bool
 }
 
-var probeBaseConfig = &probeConfigCache{}
+func newProbeConfigCache() *probeConfigCache { return &probeConfigCache{} }
 
 func (c *probeConfigCache) set(ctx context.Context, profile string) {
 	c.mu.Lock()
@@ -190,9 +197,19 @@ func (c *probeConfigCache) get(profile string) (aws.Config, bool) {
 	return aws.Config{}, false
 }
 
+// activeProbeCache is set per DiscoverRegionsWithClusters call so probes
+// share the same loaded config and credential provider state. It's nil
+// outside an active sweep, in which case defaultRegionProber loads fresh.
+var activeProbeCache *probeConfigCache
+
 func defaultRegionProber(ctx context.Context, profile, region string) (bool, error) {
-	cfg, ok := probeBaseConfig.get(profile)
-	if !ok {
+	var cfg aws.Config
+	if c := activeProbeCache; c != nil {
+		if v, ok := c.get(profile); ok {
+			cfg = v
+		}
+	}
+	if cfg.Credentials == nil {
 		var err error
 		cfg, err = baseAWSConfigForProbe(ctx, profile)
 		if err != nil {
@@ -234,7 +251,13 @@ func DiscoverRegionsWithClusters(ctx context.Context, profile string, candidates
 	// re-parse ~/.aws/config from disk. Failures here mean we'll fall back
 	// to defaultRegionProber's own config load (cheaper to skip the
 	// optimisation than to fail discovery entirely).
-	probeBaseConfig.set(ctx, profile)
+	//
+	// We allocate a fresh cache per call so credential-provider state from
+	// a previous sweep (especially one that ran before SSO login) cannot
+	// poison this one.
+	activeProbeCache = newProbeConfigCache()
+	activeProbeCache.set(ctx, profile)
+	defer func() { activeProbeCache = nil }()
 
 	var (
 		mu       sync.Mutex

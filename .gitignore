@@ -1,6 +1,7 @@
 # Added by goreleaser init:
 dist/
 .env
+/AGENTS.md
 
 # Local Makefile build output
 bin/

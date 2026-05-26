@@ -157,6 +157,40 @@ func TestBubbleteaSelectThemePreviewBranch(t *testing.T) {
 	}
 }
 
+func TestBubbleteaSelectLoadedAutoSelectsSingleItem(t *testing.T) {
+	in := newScriptedKeys()
+	defer in.Close()
+	out := &bytes.Buffer{}
+
+	type result struct {
+		val    string
+		goBack bool
+		err    error
+	}
+	resCh := make(chan result, 1)
+	go func() {
+		val, goBack, err := bubbleteaSelectLoaded("Connecting to ECS...", "Choose ECS cluster", "", true, "Profile: dt > Region: eu-north-1", true, func() ([]string, error) {
+			return []string{"prod"}, nil
+		}, tea.WithInput(in), tea.WithOutput(out))
+		resCh <- result{val, goBack, err}
+	}()
+
+	select {
+	case r := <-resCh:
+		if r.err != nil {
+			t.Fatalf("err: %v", r.err)
+		}
+		if r.goBack {
+			t.Fatal("did not expect goBack")
+		}
+		if r.val != "prod" {
+			t.Fatalf("expected prod, got %q", r.val)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("loaded picker did not auto-select single item")
+	}
+}
+
 func TestPromptSelectGoBack(t *testing.T) {
 	// Ctrl+B (0x02) triggers go-back.
 	in := newScriptedKeys(0x02)
@@ -172,5 +206,100 @@ func TestPromptSelectGoBack(t *testing.T) {
 	}
 	if val != "" {
 		t.Fatalf("expected empty val on goBack, got %q", val)
+	}
+}
+
+func TestPromptSelectEscGoesBack(t *testing.T) {
+	in := newScriptedKeys(0x1b)
+	defer in.Close()
+	prev := promptExtraOpts
+	promptExtraOpts = []tea.ProgramOption{tea.WithInput(in), tea.WithOutput(&bytes.Buffer{})}
+	t.Cleanup(func() { promptExtraOpts = prev })
+
+	c := &Cli{}
+	val, goBack := c.PromptSelect("Pick", []string{"a", "b"}, "", true)
+	if !goBack {
+		t.Fatalf("expected esc to go back, got val=%q goBack=%v", val, goBack)
+	}
+	if val != "" {
+		t.Fatalf("expected empty val on esc back, got %q", val)
+	}
+}
+
+func TestPromptSelectQExitsSilently(t *testing.T) {
+	in := newScriptedKeys('q')
+	defer in.Close()
+	out := &bytes.Buffer{}
+	prevOpts := promptExtraOpts
+	prevExit := exitFn
+	exitCode := -1
+	promptExtraOpts = []tea.ProgramOption{tea.WithInput(in), tea.WithOutput(out)}
+	exitFn = func(code int) { exitCode = code }
+	t.Cleanup(func() {
+		promptExtraOpts = prevOpts
+		exitFn = prevExit
+	})
+
+	c := &Cli{}
+	val, goBack := c.PromptSelect("Pick", []string{"a", "b"}, "", true)
+	if val != "" || goBack {
+		t.Fatalf("q should quit without selection/back: val=%q goBack=%v", val, goBack)
+	}
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", exitCode)
+	}
+	if strings.Contains(out.String(), "Cancelled.") {
+		t.Fatalf("q should not print Cancelled, output=%q", out.String())
+	}
+}
+
+func TestLoadedPromptQExitsSilently(t *testing.T) {
+	in := newScriptedKeys('q')
+	defer in.Close()
+	out := &bytes.Buffer{}
+	prevOpts := promptExtraOpts
+	prevExit := exitFn
+	exitCode := -1
+	promptExtraOpts = []tea.ProgramOption{tea.WithInput(in), tea.WithOutput(out)}
+	exitFn = func(code int) { exitCode = code }
+	t.Cleanup(func() {
+		promptExtraOpts = prevOpts
+		exitFn = prevExit
+	})
+
+	c := &Cli{}
+	val, goBack, err := c.PromptSelectLoadedBreadcrumb("Loading...", "Pick", "", true, "Profile: p", false, func() ([]string, error) {
+		return []string{"a", "b"}, nil
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if val != "" || goBack {
+		t.Fatalf("q should quit without selection/back: val=%q goBack=%v", val, goBack)
+	}
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", exitCode)
+	}
+	if strings.Contains(out.String(), "Cancelled.") {
+		t.Fatalf("q should not print Cancelled, output=%q", out.String())
+	}
+}
+
+func TestLoadedPromptEscGoesBack(t *testing.T) {
+	in := newScriptedKeys(0x1b)
+	defer in.Close()
+	prevOpts := promptExtraOpts
+	promptExtraOpts = []tea.ProgramOption{tea.WithInput(in), tea.WithOutput(&bytes.Buffer{})}
+	t.Cleanup(func() { promptExtraOpts = prevOpts })
+
+	c := &Cli{}
+	val, goBack, err := c.PromptSelectLoadedBreadcrumb("Loading...", "Pick", "", true, "Profile: p", false, func() ([]string, error) {
+		return []string{"a", "b"}, nil
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !goBack || val != "" {
+		t.Fatalf("esc should go back from loaded prompt: val=%q goBack=%v", val, goBack)
 	}
 }

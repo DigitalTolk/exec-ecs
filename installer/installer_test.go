@@ -56,3 +56,16 @@ func TestVersionSet(t *testing.T) {
 		t.Fatalf("Version should start with v: %s", Version)
 	}
 }
+
+func TestRuntimeDependenciesDoNotRequireAWSCLI(t *testing.T) {
+	t.Parallel()
+	deps := runtimeDependencies()
+	if len(deps) == 0 {
+		t.Fatal("expected at least one runtime dependency")
+	}
+	for _, dep := range deps {
+		if dep.command == "aws" {
+			t.Fatal("AWS CLI should not be required for native ECS/SSO calls")
+		}
+	}
+}

@@ -21,20 +21,30 @@ const (
 const matrixRainWidth = 40
 const matrixRainHeight = 16
 const matrixChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%&"
+const selectedMarker = ">"
 
 type menuModel struct {
-	items           []string
-	filteredItems   []string
-	cursor          int
-	choice          string
-	label           string
-	quitting        bool
-	viewport        viewport.Model
-	textInput       textinput.Model
-	filterMode      bool
-	page            int
-	historyMode     bool
-	goBackTriggered bool
+	items            []string
+	filteredItems    []string
+	cursor           int
+	choice           string
+	label            string
+	breadcrumb       string
+	defaultSelected  string
+	quitting         bool
+	viewport         viewport.Model
+	textInput        textinput.Model
+	filterMode       bool
+	page             int
+	historyMode      bool
+	goBackTriggered  bool
+	showGoBack       bool
+	loading          bool
+	loadingMessage   string
+	loadingFrame     int
+	loadCmd          tea.Cmd
+	loadErr          error
+	autoSelectSingle bool
 
 	// Animation state for Matrix theme
 	frame      int
@@ -59,6 +69,10 @@ type menuModel struct {
 }
 
 type tickMsg time.Time
+type loadItemsMsg struct {
+	items []string
+	err   error
+}
 
 type ideModel struct {
 	menu   menuModel
@@ -67,6 +81,10 @@ type ideModel struct {
 }
 
 func initialModel(label string, items []string, defaultSelected string, showGoBack bool) menuModel {
+	return initialModelWithBreadcrumb(label, items, defaultSelected, showGoBack, "")
+}
+
+func initialModelWithBreadcrumb(label string, items []string, defaultSelected string, showGoBack bool, breadcrumb string) menuModel {
 	ti := textinput.New()
 	ti.Placeholder = "Type to filter..."
 	ti.CharLimit = 50
@@ -89,15 +107,18 @@ func initialModel(label string, items []string, defaultSelected string, showGoBa
 	cursor := selectedIdx % itemsPerPage
 
 	m := menuModel{
-		items:         allItems,
-		filteredItems: allItems,
-		label:         label,
-		viewport:      viewport.New(80, itemsPerPage+2),
-		textInput:     ti,
-		cursor:        cursor,
-		page:          page,
-		itemsPerPage:  itemsPerPage,
-		scaleFactor:   1.0,
+		items:           allItems,
+		filteredItems:   allItems,
+		label:           label,
+		breadcrumb:      breadcrumb,
+		defaultSelected: defaultSelected,
+		viewport:        viewport.New(80, itemsPerPage+2),
+		textInput:       ti,
+		cursor:          cursor,
+		page:            page,
+		itemsPerPage:    itemsPerPage,
+		scaleFactor:     1.0,
+		showGoBack:      showGoBack,
 	}
 	if CurrentTheme.Name == "Matrix" {
 		m.matrixRain = make([]string, matrixRainHeight)
@@ -121,6 +142,11 @@ func randomMatrixLine() string {
 }
 
 func (m menuModel) Init() tea.Cmd {
+	if m.loading {
+		return tea.Batch(m.loadCmd, tea.Tick(time.Millisecond*100, func(t time.Time) tea.Msg {
+			return tickMsg(t)
+		}))
+	}
 	if CurrentTheme.Name == "Matrix" {
 		return tea.Tick(time.Millisecond*80, func(t time.Time) tea.Msg {
 			return tickMsg(t)
@@ -133,8 +159,50 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
+	case loadItemsMsg:
+		if msg.err != nil {
+			m.loadErr = msg.err
+			m.quitting = true
+			return m, tea.Quit
+		}
+		m.loading = false
+		m.items = msg.items
+		m.filteredItems = msg.items
+		if m.autoSelectSingle && len(msg.items) == 1 {
+			m.choice = msg.items[0]
+			m.quitting = true
+			return m, tea.Quit
+		}
+		m.cursor = 0
+		m.page = 0
+		for i, item := range msg.items {
+			if item == m.defaultSelected {
+				m.page = i / m.itemsPerPage
+				m.cursor = i % m.itemsPerPage
+				break
+			}
+		}
+		return m, textinput.Blink
 	case tea.KeyMsg:
 		key := msg.String()
+		if m.loading {
+			switch key {
+			case "ctrl+c", "q":
+				m.quitting = true
+				return m, tea.Quit
+			case "esc":
+				if m.showGoBack {
+					m.goBackTriggered = true
+				}
+				m.quitting = true
+				return m, tea.Quit
+			case "ctrl+left", "ctrl+b":
+				m.goBackTriggered = true
+				m.quitting = true
+				return m, tea.Quit
+			}
+			return m, nil
+		}
 
 		// While the filter input is focused we must let `q`, `/`, etc. flow
 		// into the textinput as ordinary characters. Only ctrl+c, esc and
@@ -182,6 +250,9 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.isThemeSelection && m.originalTheme != nil {
 				CurrentTheme = m.originalTheme
 			}
+			if m.showGoBack {
+				m.goBackTriggered = true
+			}
 			m.quitting = true
 			return m, tea.Quit
 
@@ -191,6 +262,7 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.textInput.Blur()
 				return m, nil
 			}
+			m.clampSelection()
 			if len(m.filteredItems) > 0 {
 				choice := m.filteredItems[m.cursor+m.page*m.itemsPerPage]
 				m.choice = choice
@@ -300,6 +372,10 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case tickMsg:
+		if m.loading {
+			m.loadingFrame++
+			return m, tea.Tick(time.Millisecond*100, func(t time.Time) tea.Msg { return tickMsg(t) })
+		}
 		if CurrentTheme.Name == "Matrix" && len(m.matrixRain) > 0 {
 			copy(m.matrixRain[1:], m.matrixRain[:len(m.matrixRain)-1])
 			m.matrixRain[0] = randomMatrixLine()
@@ -317,6 +393,7 @@ func (m menuModel) View() string {
 	if m.quitting {
 		return ""
 	}
+	m.clampSelection()
 
 	var s strings.Builder
 
@@ -327,6 +404,10 @@ func (m menuModel) View() string {
 	}
 
 	s.WriteString(CurrentTheme.TitleStyle.Render(m.label))
+	if m.breadcrumb != "" {
+		s.WriteString("\n")
+		s.WriteString(CurrentTheme.HelpStyle.Render(m.breadcrumb))
+	}
 
 	if m.filterMode {
 		s.WriteString(CurrentTheme.FilterStyle.Render("Filter: " + m.textInput.View()))
@@ -338,7 +419,7 @@ func (m menuModel) View() string {
 	for i := start; i < end; i++ {
 		item := m.filteredItems[i]
 		if i-start == m.cursor {
-			s.WriteString(CurrentTheme.SelectedItem.Render("▶ " + item))
+			s.WriteString(CurrentTheme.SelectedItem.Render(selectedMarker + " " + item))
 		} else {
 			s.WriteString(CurrentTheme.ItemStyle.Render(item))
 		}
@@ -355,7 +436,10 @@ func (m menuModel) View() string {
 		return s.String()
 	}
 
-	help := "\n↑↓ Move • Enter Select • / Filter • q Quit • ctrl+b Back • ctrl+h History"
+	help := "\n↑↓ Move • Enter Select • / Filter • q Quit • esc/ctrl+b Back • ctrl+h History"
+	if !m.showGoBack {
+		help = "\n↑↓ Move • Enter Select • / Filter • q Quit • ctrl+h History"
+	}
 	if m.filterMode {
 		help = "\nEsc: Exit Filter • Enter Apply Filter"
 	}
@@ -437,6 +521,7 @@ func (m ideModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.menu.viewport.Height = itemsPerPage + 2
 
 		m.menu.textInput.Width = min(50, msg.Width-20)
+		m.menu.clampSelection()
 
 		return m, nil
 	}
@@ -449,10 +534,27 @@ func (m menuModel) menuViewOnly() string {
 	if m.quitting {
 		return ""
 	}
+	m.clampSelection()
 	var s strings.Builder
 	// Title (inside main area)
 	s.WriteString(CurrentTheme.TitleStyle.Render(m.label))
-	s.WriteString("\n\n") // Add a newline after the label/title
+	s.WriteString("\n")
+	if m.breadcrumb != "" {
+		s.WriteString(CurrentTheme.HelpStyle.Render(m.breadcrumb))
+		s.WriteString("\n")
+	}
+	s.WriteString("\n") // Add a newline after the label/breadcrumb
+	if m.loading {
+		frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+		frame := frames[m.loadingFrame%len(frames)]
+		message := m.loadingMessage
+		if message == "" {
+			message = "Loading..."
+		}
+		s.WriteString(CurrentTheme.ItemStyle.Render(frame + " " + message))
+		s.WriteString("\n")
+		return s.String()
+	}
 	// Filter input
 	if m.filterMode {
 		s.WriteString(CurrentTheme.FilterStyle.Render("Filter: " + m.textInput.View()))
@@ -464,21 +566,19 @@ func (m menuModel) menuViewOnly() string {
 
 	// Scale theme-specific elements based on terminal size
 	if CurrentTheme.Name == "Pac-Man" {
-		ghosts := []string{"👻", "👾", "👻", "👾"}
 		mazeBorder := lipgloss.NewStyle().Foreground(lipgloss.Color("#fff200")).Render("╔══════════════════════════════════╗")
 		mazeBottom := lipgloss.NewStyle().Foreground(lipgloss.Color("#fff200")).Render("╚══════════════════════════════════╝")
 		s.WriteString(mazeBorder + "\n")
 		for i := start; i < end; i++ {
 			item := m.filteredItems[i]
-			icon := ghosts[i%len(ghosts)]
 			dots := ""
 			for d := 0; d < 8; d++ {
 				dots += "·"
 			}
 			if i-start == m.cursor {
-				s.WriteString(CurrentTheme.SelectedItem.Render("🟡" + dots + " " + item))
+				s.WriteString(CurrentTheme.SelectedItem.Render(selectedMarker + dots + " " + item))
 			} else {
-				s.WriteString(CurrentTheme.ItemStyle.Render(icon + dots + " " + item))
+				s.WriteString(CurrentTheme.ItemStyle.Render(" " + dots + " " + item))
 			}
 			s.WriteString("\n")
 		}
@@ -492,9 +592,9 @@ func (m menuModel) menuViewOnly() string {
 		for i := start; i < end; i++ {
 			item := m.filteredItems[i]
 			if i-start == m.cursor {
-				s.WriteString(CurrentTheme.SelectedItem.Render("▣ " + item + " "))
+				s.WriteString(CurrentTheme.SelectedItem.Render(selectedMarker + " " + item + " "))
 			} else {
-				s.WriteString(CurrentTheme.ItemStyle.Render("░ " + item + " "))
+				s.WriteString(CurrentTheme.ItemStyle.Render("  " + item + " "))
 			}
 			s.WriteString("\n")
 		}
@@ -508,12 +608,10 @@ func (m menuModel) menuViewOnly() string {
 		// looked odd on wide terminals because the highlighted strip only
 		// covered the rendered text, not the full row.
 		style := CurrentTheme.ItemStyle
-		icon := CurrentTheme.UnselectedIcon
 		if i-start == m.cursor {
-			icon = CurrentTheme.SelectionIcon
-			s.WriteString(CurrentTheme.SelectedItem.Render(icon + " " + item + strings.Repeat(" ", CurrentTheme.SelectedPaddingRight)))
+			s.WriteString(CurrentTheme.SelectedItem.Render(selectedMarker + " " + item + strings.Repeat(" ", CurrentTheme.SelectedPaddingRight)))
 		} else {
-			s.WriteString(style.Render(icon + " " + item))
+			s.WriteString(style.Render("  " + item))
 		}
 		s.WriteString("\n")
 	}
@@ -529,15 +627,30 @@ func (m menuModel) menuViewOnly() string {
 
 func (m menuModel) menuHelpOnly() string {
 	// Scale help text based on terminal width
-	defaultShortcuts := "↑↓ Move • Enter Select • / Filter • q Quit • ctrl+b Back • ctrl+h History • ctrl+t Theme"
+	defaultShortcuts := "↑↓ Move • Enter Select • / Filter • q Quit • esc/ctrl+b Back • ctrl+h History • ctrl+t Theme"
+	if !m.showGoBack {
+		defaultShortcuts = "↑↓ Move • Enter Select • / Filter • q Quit • ctrl+h History • ctrl+t Theme"
+	}
 	if m.width < 80 {
-		defaultShortcuts = "↑↓ Move • Enter Select • / Filter • q Quit • ctrl+b Back • ctrl+h History • ctrl+t Theme"
+		defaultShortcuts = "↑↓ Move • Enter Select • / Filter • q Quit • esc/ctrl+b Back • ctrl+h History • ctrl+t Theme"
+		if !m.showGoBack {
+			defaultShortcuts = "↑↓ Move • Enter Select • / Filter • q Quit • ctrl+h History • ctrl+t Theme"
+		}
 	} else if m.width > 120 {
-		defaultShortcuts = "↑↓ Move • Enter Select • / Filter • q Quit • ctrl+b Back • ctrl+h History • ctrl+t Theme"
+		defaultShortcuts = "↑↓ Move • Enter Select • / Filter • q Quit • esc/ctrl+b Back • ctrl+h History • ctrl+t Theme"
+		if !m.showGoBack {
+			defaultShortcuts = "↑↓ Move • Enter Select • / Filter • q Quit • ctrl+h History • ctrl+t Theme"
+		}
 	}
 
 	if m.filterMode {
 		return "Esc: Exit Filter • Enter Apply Filter"
+	}
+	if m.loading {
+		if m.showGoBack {
+			return "Loading • esc/ctrl+b Back • q Quit"
+		}
+		return "Loading • q Quit"
 	}
 	if m.historyMode {
 		return "To go back press esc key"
@@ -552,6 +665,7 @@ func (m menuModel) menuHelpOnly() string {
 func (m *menuModel) filterItems(filter string) {
 	if filter == "" {
 		m.filteredItems = m.items
+		m.clampSelection()
 		return
 	}
 	filtered := make([]string, 0)
@@ -563,6 +677,36 @@ func (m *menuModel) filterItems(filter string) {
 	m.filteredItems = filtered
 	m.cursor = 0
 	m.page = 0
+	m.clampSelection()
+}
+
+func (m *menuModel) clampSelection() {
+	if m.itemsPerPage <= 0 {
+		m.itemsPerPage = defaultItemsPerPage
+	}
+	if len(m.filteredItems) == 0 {
+		m.cursor = 0
+		m.page = 0
+		return
+	}
+
+	maxPage := (len(m.filteredItems) - 1) / m.itemsPerPage
+	if m.page < 0 {
+		m.page = 0
+	} else if m.page > maxPage {
+		m.page = maxPage
+	}
+
+	pageStart := m.page * m.itemsPerPage
+	maxCursor := min(m.itemsPerPage, len(m.filteredItems)-pageStart) - 1
+	if maxCursor < 0 {
+		maxCursor = 0
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	} else if m.cursor > maxCursor {
+		m.cursor = maxCursor
+	}
 }
 
 // updateThemePreview updates the preview theme based on current cursor position
@@ -570,6 +714,7 @@ func (m *menuModel) updateThemePreview() {
 	if !m.isThemeSelection {
 		return
 	}
+	m.clampSelection()
 
 	start := m.page * m.itemsPerPage
 	end := min(start+m.itemsPerPage, len(m.filteredItems))

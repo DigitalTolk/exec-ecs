@@ -504,3 +504,9 @@ func LoadThemeSelection() string {
 	}
 	return strings.TrimSpace(string(data))
 }
+
+func ApplySavedThemeSelection() {
+	if name := LoadThemeSelection(); name != "" {
+		SetThemeByName(name)
+	}
+}

@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -57,5 +58,48 @@ func TestSaveAndLoadThemeSelection(t *testing.T) {
 	}
 	if stat.Mode().Perm() != 0o600 {
 		t.Fatalf("permissions = %v want 0600", stat.Mode().Perm())
+	}
+}
+
+func TestApplySavedThemeSelectionRestoresThemeAfterRestart(t *testing.T) {
+	tmp := t.TempDir()
+	prevDir := configDirOverride
+	prevTheme := CurrentTheme
+	configDirOverride = tmp
+	t.Cleanup(func() {
+		configDirOverride = prevDir
+		CurrentTheme = prevTheme
+	})
+
+	SaveThemeSelection("Matrix")
+	CurrentTheme = DraculaTheme
+
+	ApplySavedThemeSelection()
+
+	if CurrentTheme.Name != "Matrix" {
+		t.Fatalf("theme after simulated restart = %q, want Matrix", CurrentTheme.Name)
+	}
+}
+
+func TestSavedThemeAffectsInitialMenuRender(t *testing.T) {
+	tmp := t.TempDir()
+	prevDir := configDirOverride
+	prevTheme := CurrentTheme
+	configDirOverride = tmp
+	t.Cleanup(func() {
+		configDirOverride = prevDir
+		CurrentTheme = prevTheme
+	})
+
+	SaveThemeSelection("Matrix")
+	CurrentTheme = DraculaTheme
+	ApplySavedThemeSelection()
+
+	m := initialModel("Choose AWS profile", []string{"alpha"}, "", false)
+	if CurrentTheme.Name != "Matrix" {
+		t.Fatalf("theme before render = %q, want Matrix", CurrentTheme.Name)
+	}
+	if out := m.menuViewOnly(); !strings.Contains(out, "alpha") {
+		t.Fatalf("saved theme render lost menu content: %q", out)
 	}
 }

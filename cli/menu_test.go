@@ -2,6 +2,7 @@ package cli
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,6 +141,40 @@ func TestMenuModelUpdateEnterSelects(t *testing.T) {
 	_ = cmd
 }
 
+func TestMenuModelEnterClampsStalePage(t *testing.T) {
+	t.Parallel()
+	items := make([]string, 18)
+	for i := range items {
+		items[i] = "profile"
+	}
+	items[17] = "last"
+
+	m := initialModel("Choose AWS profile", items, "", false)
+	m.itemsPerPage = 10
+	m.page = 2
+	m.cursor = 7
+
+	updated, _ := m.Update(keyMsg("enter"))
+	mm := updated.(menuModel)
+	if mm.choice != "last" {
+		t.Fatalf("stale page/cursor should clamp to last item, got %q", mm.choice)
+	}
+}
+
+func TestMenuViewClampsStalePageSoProfilesRender(t *testing.T) {
+	t.Parallel()
+	items := []string{"alpha", "beta"}
+	m := initialModel("Choose AWS profile", items, "", false)
+	m.itemsPerPage = 10
+	m.page = 2
+	m.cursor = 7
+
+	out := m.menuViewOnly()
+	if !strings.Contains(out, "alpha") && !strings.Contains(out, "beta") {
+		t.Fatalf("stale page should still render profile items, got %q", out)
+	}
+}
+
 func TestMenuModelUpdateGoBack(t *testing.T) {
 	t.Parallel()
 	m := initialModel("pick", []string{"a"}, "", true)
@@ -148,6 +183,107 @@ func TestMenuModelUpdateGoBack(t *testing.T) {
 	mm := updated.(menuModel)
 	if !mm.goBackTriggered || !mm.quitting {
 		t.Fatalf("expected goBack+quitting: %+v", mm)
+	}
+}
+
+func TestMenuModelLoadingRendersInsideDialog(t *testing.T) {
+	t.Parallel()
+	m := initialModel("Choose ECS cluster", nil, "", true)
+	m.loading = true
+	m.loadingMessage = "Connecting to ECS..."
+	m.itemsPerPage = 10
+
+	out := m.menuViewOnly()
+	if !strings.Contains(out, "Choose ECS cluster") || !strings.Contains(out, "Connecting to ECS...") {
+		t.Fatalf("loading view missing label/message: %q", out)
+	}
+	if help := m.menuHelpOnly(); !strings.Contains(help, "Loading") || !strings.Contains(help, "Back") {
+		t.Fatalf("loading help = %q", help)
+	}
+}
+
+func TestMenuModelLoadItemsSwitchesToSelection(t *testing.T) {
+	t.Parallel()
+	m := initialModel("pick", nil, "beta", true)
+	m.loading = true
+	m.itemsPerPage = 10
+
+	updated, _ := m.Update(loadItemsMsg{items: []string{"alpha", "beta"}})
+	mm := updated.(menuModel)
+	if mm.loading {
+		t.Fatal("load completion should exit loading mode")
+	}
+	if mm.cursor != 1 {
+		t.Fatalf("cursor = %d, want default item index 1", mm.cursor)
+	}
+}
+
+func TestMenuModelLoadItemsAutoSelectsSingleItem(t *testing.T) {
+	t.Parallel()
+	m := initialModel("Choose ECS cluster", nil, "", true)
+	m.loading = true
+	m.autoSelectSingle = true
+	m.itemsPerPage = 10
+
+	updated, _ := m.Update(loadItemsMsg{items: []string{"only-cluster"}})
+	mm := updated.(menuModel)
+	if mm.choice != "only-cluster" || !mm.quitting {
+		t.Fatalf("single item should auto-select and quit: %+v", mm)
+	}
+}
+
+func TestMenuModelBreadcrumbRenders(t *testing.T) {
+	t.Parallel()
+	m := initialModelWithBreadcrumb("Choose ECS service", []string{"api"}, "", true, "Profile: dt > Region: eu-north-1 > Cluster: prod")
+	m.itemsPerPage = 10
+
+	out := m.menuViewOnly()
+	if !strings.Contains(out, "Profile: dt") || !strings.Contains(out, "Cluster: prod") {
+		t.Fatalf("breadcrumb missing from view: %q", out)
+	}
+}
+
+func TestMenuModelHighlightUsesPlainMarkerAcrossThemes(t *testing.T) {
+	prev := CurrentTheme
+	t.Cleanup(func() { CurrentTheme = prev })
+
+	for _, theme := range []*Theme{GhostyTheme, PacManTheme, MatrixTheme, ZeldaTheme} {
+		CurrentTheme = theme
+		m := initialModel("pick", []string{"alpha"}, "", true)
+		m.itemsPerPage = 10
+		out := m.menuViewOnly()
+		for _, disallowed := range []string{"👻", "👾", "🟡", "💚", "▣"} {
+			if strings.Contains(out, disallowed) {
+				t.Fatalf("theme %s highlight should not render theme marker %q in %q", theme.Name, disallowed, out)
+			}
+		}
+		if !strings.Contains(out, selectedMarker+" alpha") && !strings.Contains(out, selectedMarker+"········ alpha") {
+			t.Fatalf("theme %s missing plain selected marker in %q", theme.Name, out)
+		}
+	}
+}
+
+func TestMenuModelEscGoesBackWhenAvailable(t *testing.T) {
+	t.Parallel()
+	m := initialModel("pick", []string{"a"}, "", true)
+	m.itemsPerPage = 10
+
+	updated, _ := m.Update(keyMsg("esc"))
+	mm := updated.(menuModel)
+	if !mm.goBackTriggered || !mm.quitting {
+		t.Fatalf("esc should trigger goBack when available: %+v", mm)
+	}
+}
+
+func TestMenuModelEscQuitsWhenNoBackStep(t *testing.T) {
+	t.Parallel()
+	m := initialModel("pick", []string{"a"}, "", false)
+	m.itemsPerPage = 10
+
+	updated, _ := m.Update(keyMsg("esc"))
+	mm := updated.(menuModel)
+	if mm.goBackTriggered || !mm.quitting {
+		t.Fatalf("esc should only quit without a back step: %+v", mm)
 	}
 }
 

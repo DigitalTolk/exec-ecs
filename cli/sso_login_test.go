@@ -122,6 +122,90 @@ func TestSSOCacheIsValid(t *testing.T) {
 	}
 }
 
+func TestSSOSessionConfigCacheKey(t *testing.T) {
+	t.Parallel()
+	newStyle := &SSOSessionConfig{Name: "session1", StartURL: "https://x"}
+	if got := newStyle.CacheKey(); got != "session1" {
+		t.Fatalf("new-style cache key = %q want session1", got)
+	}
+
+	legacy := &SSOSessionConfig{StartURL: "https://digitaltolk.awsapps.com/start", Legacy: true}
+	if got := legacy.CacheKey(); got != "https://digitaltolk.awsapps.com/start" {
+		t.Fatalf("legacy cache key = %q", got)
+	}
+
+	// A new-style config with empty name falls back to start URL too, just
+	// in case we ever end up parsing one with a malformed sso_session.
+	weird := &SSOSessionConfig{StartURL: "https://y"}
+	if got := weird.CacheKey(); got != "https://y" {
+		t.Fatalf("fallback cache key = %q", got)
+	}
+}
+
+func TestLookupSSOSessionConfigLegacyProfile(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	awsDir := filepath.Join(tmp, ".aws")
+	if err := os.MkdirAll(awsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `
+[profile legacy]
+sso_start_url = https://digitaltolk.awsapps.com/start
+sso_region = eu-central-1
+sso_account_id = 123456789012
+sso_role_name = AdminAccess
+region = eu-central-1
+
+[profile half]
+sso_start_url = https://example.awsapps.com/start
+# missing sso_region — not a valid SSO profile
+
+[profile plain]
+region = us-east-1
+`
+	if err := os.WriteFile(filepath.Join(awsDir, "config"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c := &Cli{}
+	cfg, err := c.LookupSSOSessionConfig("legacy")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("legacy profile should be recognised")
+	}
+	if !cfg.Legacy {
+		t.Fatal("Legacy flag should be true")
+	}
+	if cfg.StartURL != "https://digitaltolk.awsapps.com/start" {
+		t.Fatalf("start URL wrong: %q", cfg.StartURL)
+	}
+	if cfg.Region != "eu-central-1" {
+		t.Fatalf("region wrong: %q", cfg.Region)
+	}
+	if cfg.Name != "" {
+		t.Fatalf("legacy config should have empty Name, got %q", cfg.Name)
+	}
+	// CacheKey should be the start URL.
+	if cfg.CacheKey() != cfg.StartURL {
+		t.Fatalf("cache key wrong: %q", cfg.CacheKey())
+	}
+
+	// Profile with sso_start_url but no sso_region → not an SSO profile.
+	cfg, err = c.LookupSSOSessionConfig("half")
+	if err != nil || cfg != nil {
+		t.Fatalf("half profile: cfg=%+v err=%v (expected nil/nil)", cfg, err)
+	}
+
+	// Plain profile with neither flavour → nil.
+	cfg, err = c.LookupSSOSessionConfig("plain")
+	if err != nil || cfg != nil {
+		t.Fatalf("plain profile: cfg=%+v err=%v", cfg, err)
+	}
+}
+
 func TestLookupSSOSessionConfig(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)

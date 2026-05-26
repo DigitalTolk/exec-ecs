@@ -25,17 +25,42 @@ import (
 // public OAuth2 client. It shows up in the SSO UI alongside the device code.
 const ssoClientName = "exec-ecs"
 
-// SSOSessionConfig captures the subset of an `~/.aws/config` `[sso-session …]`
-// block we need to drive an OIDC device-code login.
+// SSOSessionConfig captures everything we need to drive an OIDC device-code
+// login. It supports both AWS SSO config flavours:
+//
+//   - New-style ("sso-session" form): a profile references a separate
+//     `[sso-session NAME]` block that holds StartURL/Region. The token cache
+//     key is sha1(NAME).
+//   - Legacy ("inline" form): the `sso_start_url` / `sso_region` /
+//     `sso_account_id` / `sso_role_name` keys live directly on the profile;
+//     there is no separate block. The token cache key is sha1(StartURL).
+//
+// We need to know which flavour produced this struct because the AWS SDK
+// looks up the cached SSO token under different paths for each.
 type SSOSessionConfig struct {
+	// Name is the sso-session name for new-style configs, or empty for
+	// legacy ones.
 	Name     string
 	StartURL string
 	Region   string
 	Scopes   string
+	// Legacy is true when this came from inline sso_* keys (no separate
+	// sso-session block).
+	Legacy bool
 }
 
-// LookupSSOSessionConfig returns the full sso-session block referenced by a
-// profile, or nil if the profile does not use SSO.
+// CacheKey returns the input the AWS SDK hashes (sha1) to find the cached
+// token file on disk. Legacy configs key by StartURL; new-style key by Name.
+func (s *SSOSessionConfig) CacheKey() string {
+	if s.Legacy || s.Name == "" {
+		return s.StartURL
+	}
+	return s.Name
+}
+
+// LookupSSOSessionConfig returns the SSO config attached to a profile, or
+// nil if the profile doesn't use SSO at all. It handles both new-style
+// (sso-session block) and legacy (inline keys) configurations.
 func (c *Cli) LookupSSOSessionConfig(profile string) (*SSOSessionConfig, error) {
 	cfg, err := ini.Load(c.AWSConfigPath())
 	if err != nil {
@@ -45,19 +70,33 @@ func (c *Cli) LookupSSOSessionConfig(profile string) (*SSOSessionConfig, error) 
 	if err != nil {
 		return nil, nil
 	}
-	sessionName := strings.TrimSpace(section.Key("sso_session").String())
-	if sessionName == "" {
+
+	// Prefer the new-style block when present.
+	if sessionName := strings.TrimSpace(section.Key("sso_session").String()); sessionName != "" {
+		sessSection, err := cfg.GetSection("sso-session " + sessionName)
+		if err != nil {
+			return nil, fmt.Errorf("sso-session %q referenced by profile %q is missing from config", sessionName, profile)
+		}
+		return &SSOSessionConfig{
+			Name:     sessionName,
+			StartURL: strings.TrimSpace(sessSection.Key("sso_start_url").String()),
+			Region:   strings.TrimSpace(sessSection.Key("sso_region").String()),
+			Scopes:   strings.TrimSpace(sessSection.Key("sso_registration_scopes").String()),
+		}, nil
+	}
+
+	// Fall back to legacy inline keys on the profile itself.
+	startURL := strings.TrimSpace(section.Key("sso_start_url").String())
+	region := strings.TrimSpace(section.Key("sso_region").String())
+	if startURL == "" || region == "" {
+		// Neither flavour matched → profile isn't an SSO profile.
 		return nil, nil
 	}
-	sessSection, err := cfg.GetSection("sso-session " + sessionName)
-	if err != nil {
-		return nil, fmt.Errorf("sso-session %q referenced by profile %q is missing from config", sessionName, profile)
-	}
 	return &SSOSessionConfig{
-		Name:     sessionName,
-		StartURL: strings.TrimSpace(sessSection.Key("sso_start_url").String()),
-		Region:   strings.TrimSpace(sessSection.Key("sso_region").String()),
-		Scopes:   strings.TrimSpace(sessSection.Key("sso_registration_scopes").String()),
+		StartURL: startURL,
+		Region:   region,
+		Scopes:   strings.TrimSpace(section.Key("sso_registration_scopes").String()),
+		Legacy:   true,
 	}, nil
 }
 
@@ -75,10 +114,11 @@ type ssoTokenCache struct {
 }
 
 // ssoCachePath returns the path the AWS SDK looks at for the cached token.
-// For new-style sso-session configs the cache key is the SHA1 of the session
-// name (matching what aws-sdk-go-v2/credentials/ssocreds does internally).
-func ssoCachePath(sessionName string) string {
-	sum := sha1.Sum([]byte(sessionName))
+// The key is sha1(session-name) for new-style configs or sha1(start-url) for
+// legacy ones — matching what aws-sdk-go-v2/credentials/ssocreds does
+// internally. Callers pass the result of SSOSessionConfig.CacheKey().
+func ssoCachePath(cacheKey string) string {
+	sum := sha1.Sum([]byte(cacheKey))
 	name := hex.EncodeToString(sum[:]) + ".json"
 	return filepath.Join(homeDir(), ".aws", "sso", "cache", name)
 }
@@ -157,7 +197,7 @@ func (c *Cli) PerformNativeSSOLogin(ctx context.Context, sso *SSOSessionConfig) 
 		return fmt.Errorf("load aws config: %w", err)
 	}
 
-	cachePath := ssoCachePath(sso.Name)
+	cachePath := ssoCachePath(sso.CacheKey())
 	clientID, clientSecret, regExpiresAt, err := ensureSSOClientRegistration(ctx, oidc, sso, loadCachedSSOToken(cachePath))
 	if err != nil {
 		return err
@@ -279,9 +319,10 @@ func splitCSV(s string) []string {
 }
 
 // SSOCacheIsValid reports whether a non-expired cached token exists for the
-// given sso-session.
-func SSOCacheIsValid(sessionName string) bool {
-	t := loadCachedSSOToken(ssoCachePath(sessionName))
+// given cache key (either the sso-session name for new-style configs or the
+// start URL for legacy ones — see SSOSessionConfig.CacheKey).
+func SSOCacheIsValid(cacheKey string) bool {
+	t := loadCachedSSOToken(ssoCachePath(cacheKey))
 	if t == nil {
 		return false
 	}
