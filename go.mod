@@ -3,7 +3,7 @@ module ecs-tool
 go 1.26.3
 
 require (
-	github.com/aws/aws-sdk-go-v2/service/ecs v1.80.0
+	github.com/aws/aws-sdk-go-v2/service/ecs v1.81.0
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.36.0
 	github.com/charmbracelet/lipgloss v1.1.0
 )
